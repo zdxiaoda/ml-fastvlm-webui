@@ -1,0 +1,569 @@
+diff --git a/mlx_vlm/convert.py b/mlx_vlm/convert.py
+index 5952a88..335e9db 100644
+--- a/mlx_vlm/convert.py
++++ b/mlx_vlm/convert.py
+@@ -55,6 +55,12 @@ def configure_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         default=False,
+     )
++    parser.add_argument(
++        "--only-llm",
++        help="Convert only LLM.",
++        action="store_true",
++        default=False,
++    )
+     return parser
+ 
+ 
+diff --git a/mlx_vlm/models/fastvlm/__init__.py b/mlx_vlm/models/fastvlm/__init__.py
+new file mode 100644
+index 0000000..691192e
+--- /dev/null
++++ b/mlx_vlm/models/fastvlm/__init__.py
+@@ -0,0 +1,7 @@
++from .fastvlm import (
++    LanguageModel,
++    Model,
++    ModelConfig,
++    TextConfig,
++    VisionConfig,
++)
+diff --git a/mlx_vlm/models/fastvlm/fastvlm.py b/mlx_vlm/models/fastvlm/fastvlm.py
+new file mode 100644
+index 0000000..7db6497
+--- /dev/null
++++ b/mlx_vlm/models/fastvlm/fastvlm.py
+@@ -0,0 +1,187 @@
++import glob
++import inspect
++import json
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Optional
++
++import mlx.core as mx
++import mlx.nn as nn
++import numpy as np
++import coremltools
++from huggingface_hub import snapshot_download
++
++from .language import LanguageModel, TextConfig
++
++
++@dataclass
++class VisionConfig:
++    mm_hidden_size: int
++    mm_vision_tower: str
++
++    @classmethod
++    def from_dict(cls, params):
++        return cls(
++            **{
++                k: v
++                for k, v in params.items()
++                if k in inspect.signature(cls).parameters
++            }
++        )
++
++@dataclass
++class ModelConfig:
++    text_config: TextConfig
++    vision_config: VisionConfig
++    model_type: str
++    ignore_index: int = -100
++    image_token_index: int = 32000
++    vision_feature_select_strategy: str = "default"
++    vision_feature_layer: int = -2
++    vocab_size: int = 151936
++
++    @classmethod
++    def from_dict(cls, params):
++        # Copy text config parameters from root level
++        params["text_config"] = dict(
++            filter(lambda x: 'mm' not in x[0], params.items())
++        )
++        # Copy vision config parameters from root level
++        params["vision_config"] = dict(
++            filter(lambda x: 'mm' in x[0], params.items())
++        )
++
++        return cls(
++            **{
++                k: v
++                for k, v in params.items()
++                if k in inspect.signature(cls).parameters
++            }
++        )
++
++
++class FastVLMMultiModalProjector(nn.Module):
++    def __init__(self, config: ModelConfig):
++        super().__init__()
++        self.linear_0 = nn.Linear(
++            config.vision_config.mm_hidden_size, config.text_config.hidden_size, bias=True
++        )
++        self.gelu = nn.GELU()
++        self.linear_2 = nn.Linear(
++            config.text_config.hidden_size, config.text_config.hidden_size, bias=True
++        )
++
++    def __call__(self, x: mx.array) -> mx.array:
++        x = self.linear_0(x)
++        x = self.gelu(x)
++        x = self.linear_2(x)
++        return x
++
++
++class Model(nn.Module):
++    def __init__(self, config: ModelConfig):
++        super().__init__()
++        self.config = config
++        self.vision_tower = None
++        self.language_model = LanguageModel(config.text_config)
++        self.multi_modal_projector = FastVLMMultiModalProjector(config)
++        self.vision_feature_layer = config.vision_feature_layer
++        self.vision_feature_select_strategy = config.vision_feature_select_strategy
++
++    def get_input_embeddings(
++        self,
++        input_ids: Optional[mx.array] = None,
++        pixel_values: Optional[mx.array] = None,
++    ):
++        if pixel_values is None:
++            return self.language_model.model.embed_tokens(input_ids)
++
++        # Get the input embeddings from the language model
++        inputs_embeds = self.language_model.model.embed_tokens(input_ids)
++
++        # Get image features from CoreML model
++        coreml_out_dict = self.vision_tower.predict({"images": np.array(pixel_values, copy=False)})
++
++        # Pass image features through the multi-modal projector
++        image_features = self.multi_modal_projector(mx.array(coreml_out_dict["image_features"]))
++
++        # Insert special image tokens in the input_ids
++        final_inputs_embeds = self._merge_input_ids_with_image_features(
++            image_features, inputs_embeds, input_ids
++        )
++        return final_inputs_embeds
++
++    def _merge_input_ids_with_image_features(
++        self, image_features, inputs_embeds, input_ids
++    ):
++        image_token_index = self.config.image_token_index
++        num_images, num_image_patches, embed_dim = image_features.shape
++
++        # Positions of <image> tokens in input_ids, assuming batch size is 1
++        image_positions = np.where(input_ids[0] == image_token_index)[0].tolist()
++        num_images, _, vision_hidden_size = image_features.shape
++
++        reshaped_image_hidden_states = image_features.reshape(-1, vision_hidden_size)
++
++        # cast to the dtype of the input_embeds to support quantized models
++        reshaped_image_hidden_states = reshaped_image_hidden_states.astype(
++            inputs_embeds.dtype
++        )
++        inputs_embeds[:, image_positions, :] = reshaped_image_hidden_states
++        return inputs_embeds
++
++    def __call__(
++        self,
++        input_ids: mx.array,
++        pixel_values: mx.array,
++        mask: mx.array,
++        cache=None,
++        **kwargs,
++    ):
++        input_embddings = self.get_input_embeddings(input_ids, pixel_values)
++        logits = self.language_model(
++            input_ids, cache=cache, inputs_embeds=input_embddings
++        )
++        return logits
++
++    @staticmethod
++    def from_pretrained(path_or_hf_repo: str):
++        path = Path(path_or_hf_repo)
++        if not path.exists():
++            path = Path(
++                snapshot_download(
++                    repo_id=path_or_hf_repo,
++                    allow_patterns=[
++                        "*.json",
++                        "*.safetensors",
++                        "*.py",
++                        "tokenizer.model",
++                        "*.tiktoken",
++                    ],
++                )
++            )
++
++        with open(path / "config.json", "r") as f:
++            model_config = json.load(f)
++
++        model_config = ModelConfig.from_dict(model_config)
++        model_config.text_config = TextConfig.from_dict(model_config.text_config)
++
++        model = Model(model_config)
++        weight_files = glob.glob(str(path / "*.safetensors"))
++        if not weight_files:
++            raise FileNotFoundError(f"No safetensors found in {path}")
++
++        weights = {}
++        for wf in weight_files:
++            weights.update(mx.load(wf))
++
++        weights = LanguageModel.sanitize(weights)
++
++        # Load CoreML vision tower
++        coreml_file = glob.glob(str(path / "*.mlpackage"))
++        assert len(coreml_file) == 1, "Found multiple vision model files"
++        model.vision_tower = coremltools.models.MLModel(coreml_file[0])
++
++        model.load_weights(list(weights.items()))
++        return model
+diff --git a/mlx_vlm/models/fastvlm/language.py b/mlx_vlm/models/fastvlm/language.py
+new file mode 100644
+index 0000000..b791df4
+--- /dev/null
++++ b/mlx_vlm/models/fastvlm/language.py
+@@ -0,0 +1,220 @@
++import inspect
++from dataclasses import dataclass
++from typing import Dict, Optional, Tuple, Union
++
++import mlx.core as mx
++import mlx.nn as nn
++import numpy as np
++
++from ..base import KVCache, LanguageModelOutput, create_attention_mask
++
++
++@dataclass
++class TextConfig:
++    model_type: str
++    hidden_size: int
++    num_hidden_layers: int
++    intermediate_size: int
++    num_attention_heads: int
++    rms_norm_eps: float
++    vocab_size: int
++    num_key_value_heads: Optional[int] = None
++    max_position_embeddings: Optional[int] = 32768
++    rope_theta: float = 1000000
++    rope_traditional: bool = False
++    rope_scaling: Optional[Dict[str, Union[float, str]]] = None
++    tie_word_embeddings: bool = True
++
++    def __post_init__(self):
++        if self.num_key_value_heads is None:
++            self.num_key_value_heads = self.num_attention_heads
++
++        if self.rope_scaling:
++            required_keys = {"mrope_section", "type"}
++            if not all(key in self.rope_scaling for key in required_keys):
++                raise ValueError(f"rope_scaling must contain keys {required_keys}")
++
++            if not self.rope_scaling["type"] in ["mrope", "default"]:
++                raise ValueError(f"rope_scaling type must be 'mrope' or 'default'")
++
++    @classmethod
++    def from_dict(cls, params):
++        return cls(
++            **{
++                k: v
++                for k, v in params.items()
++                if k in inspect.signature(cls).parameters
++            }
++        )
++
++
++class Attention(nn.Module):
++    def __init__(self, args: TextConfig):
++        super().__init__()
++
++        dim = args.hidden_size
++        self.n_heads = n_heads = args.num_attention_heads
++        assert args.num_key_value_heads is not None
++        self.n_kv_heads = n_kv_heads = args.num_key_value_heads
++
++        self.head_dim = head_dim = args.hidden_size // n_heads
++        self.scale = head_dim**-0.5
++
++        self.q_proj = nn.Linear(dim, n_heads * head_dim, bias=True)
++        self.k_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=True)
++        self.v_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=True)
++        self.o_proj = nn.Linear(n_heads * head_dim, dim, bias=False)
++
++        self.rotary_emb = nn.RoPE(
++            head_dim,
++            base=args.rope_theta,
++            traditional=args.rope_traditional,
++        )
++
++    def __call__(
++        self,
++        x: mx.array,
++        mask: Optional[mx.array] = None,
++        cache: Optional[KVCache] = None,
++    ) -> mx.array:
++        B, L, D = x.shape
++
++        queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
++
++        # Prepare the queries, keys and values for the attention computation
++        queries = queries.reshape(B, L, self.n_heads, self.head_dim).transpose(
++            0, 2, 1, 3
++        )
++        keys = keys.reshape(B, L, self.n_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
++        values = values.reshape(B, L, self.n_kv_heads, self.head_dim).transpose(
++            0, 2, 1, 3
++        )
++
++        offset = cache.offset if cache else 0
++
++        if mask is not None:
++            mask = mask[..., : keys.shape[-2]]
++
++        queries = self.rotary_emb(queries, offset=offset)
++        keys = self.rotary_emb(keys, offset=offset)
++
++        if cache is not None:
++            keys, values = cache.update_and_fetch(keys, values)
++
++        output = mx.fast.scaled_dot_product_attention(
++            queries, keys, values, scale=self.scale, mask=mask
++        )
++        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
++        return self.o_proj(output)
++
++
++class MLP(nn.Module):
++    def __init__(self, dim, hidden_dim):
++        super().__init__()
++        self.gate_proj = nn.Linear(dim, hidden_dim, bias=False)
++        self.down_proj = nn.Linear(hidden_dim, dim, bias=False)
++        self.up_proj = nn.Linear(dim, hidden_dim, bias=False)
++
++    def __call__(self, x) -> mx.array:
++        return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
++
++
++class Qwen2DecoderLayer(nn.Module):
++    def __init__(self, args: TextConfig):
++        super().__init__()
++        self.num_attention_heads = args.num_attention_heads
++        self.hidden_size = args.hidden_size
++        self.self_attn = Attention(args)
++        self.mlp = MLP(args.hidden_size, args.intermediate_size)
++        self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
++        self.post_attention_layernorm = nn.RMSNorm(
++            args.hidden_size, eps=args.rms_norm_eps
++        )
++        self.args = args
++
++    def __call__(
++        self,
++        x: mx.array,
++        mask: Optional[mx.array] = None,
++        cache: Optional[KVCache] = None,
++    ) -> mx.array:
++        r = self.self_attn(self.input_layernorm(x), mask, cache)
++        h = x + r
++        r = self.mlp(self.post_attention_layernorm(h))
++        out = h + r
++        return out
++
++
++class Qwen2Model(nn.Module):
++    def __init__(self, args: TextConfig):
++        super().__init__()
++        self.args = args
++        self.vocab_size = args.vocab_size
++        self.num_hidden_layers = args.num_hidden_layers
++        assert self.vocab_size > 0
++        self.embed_tokens = nn.Embedding(args.vocab_size, args.hidden_size)
++        self.layers = [
++            Qwen2DecoderLayer(args=args) for _ in range(args.num_hidden_layers)
++        ]
++        self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
++
++    def __call__(
++        self,
++        inputs: mx.array,
++        cache=None,
++        inputs_embeds: Optional[mx.array] = None,
++    ):
++        if inputs_embeds is None:
++            h = self.embed_tokens(inputs)
++        else:
++            h = inputs_embeds
++
++        mask = create_attention_mask(h, cache)
++
++        if cache is None:
++            cache = [None] * len(self.layers)
++
++        for layer, c in zip(self.layers, cache):
++            h = layer(h, mask, c)
++
++        return self.norm(h)
++
++
++class LanguageModel(nn.Module):
++    def __init__(self, args: TextConfig):
++        super().__init__()
++        self.args = args
++        self.model_type = args.model_type
++        self.model = Qwen2Model(args)
++
++        if "qwen2" not in args.model_type:
++            raise ValueError(f"Unsupported model type: {args.model_type}")
++
++        if not args.tie_word_embeddings:
++            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
++
++    def __call__(
++        self,
++        inputs: mx.array,
++        cache=None,
++        inputs_embeds: Optional[mx.array] = None,
++        mask: Optional[mx.array] = None,
++    ):
++        out = self.model(inputs, cache=cache, inputs_embeds=inputs_embeds)
++        if self.args.tie_word_embeddings:
++            out = self.model.embed_tokens.as_linear(out)
++        else:
++            out = self.lm_head(out)
++        return LanguageModelOutput(logits=out)
++
++    @property
++    def layers(self):
++        return self.model.layers
++
++    @property
++    def head_dim(self):
++        return self.args.hidden_size // self.args.num_attention_heads
++
++    @property
++    def n_kv_heads(self):
++        return self.args.num_key_value_heads
+diff --git a/mlx_vlm/prompt_utils.py b/mlx_vlm/prompt_utils.py
+index 725e811..ba48296 100644
+--- a/mlx_vlm/prompt_utils.py
++++ b/mlx_vlm/prompt_utils.py
+@@ -93,6 +93,7 @@ def get_message_json(
+         "idefics2": "message_list_with_image",
+         "idefics3": "message_list_with_image",
+         "llava": "message_list_with_image",
++        "llava_qwen2": "message_with_image_token_new_line",
+         "llava_next": "message_list_with_image",
+         "mllama": "message_list_with_image",
+         # Models that can handle both image and video formats
+@@ -143,7 +144,7 @@ def get_message_json(
+ 
+ 
+ def get_chat_template(processor, messages, add_generation_prompt, tokenize=False):
+-    if "chat_template" in processor.__dict__.keys():
++    if ("chat_template" in processor.__dict__.keys()) and (processor.chat_template is not None):
+         return processor.apply_chat_template(
+             messages,
+             tokenize=tokenize,
+diff --git a/mlx_vlm/utils.py b/mlx_vlm/utils.py
+index 4acff3e..00f366f 100644
+--- a/mlx_vlm/utils.py
++++ b/mlx_vlm/utils.py
+@@ -1,3 +1,4 @@
++import os
+ import copy
+ import glob
+ import importlib
+@@ -15,6 +16,7 @@ import mlx.core as mx
+ import mlx.nn as nn
+ import numpy as np
+ import requests
++import coremltools
+ from huggingface_hub import snapshot_download
+ from mlx.utils import tree_flatten, tree_unflatten
+ from PIL import Image, ImageOps
+@@ -31,7 +33,7 @@ from .tokenizer_utils import load_tokenizer
+ from .trainer import apply_lora_layers
+ 
+ # Constants
+-MODEL_REMAPPING = {"llava-qwen2": "llava_bunny", "bunny-llama": "llava_bunny"}
++MODEL_REMAPPING = {"llava-qwen2": "llava_bunny", "bunny-llama": "llava_bunny", "llava_qwen2": "fastvlm"}
+ 
+ MAX_FILE_SIZE_GB = 5
+ 
+@@ -168,9 +170,19 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
+ 
+     # Sanitize weights
+     weights = sanitize_weights(model, weights)
+-    weights = sanitize_weights(
+-        model_class.VisionModel, weights, model_config.vision_config
+-    )
++    if hasattr(model_class, 'VisionModel'):
++        weights = sanitize_weights(
++            model_class.VisionModel, weights, model_config.vision_config
++        )
++    else:
++        # Load CoreML vision tower
++        print("Looking for CoreML vision tower")
++        coreml_file = glob.glob(str(model_path / "*.mlpackage"))
++        if len(coreml_file) > 0:
++            assert len(coreml_file) == 1, "Found multiple vision model files."
++            print(f"Loading {coreml_file[0]} vision tower")
++            model.vision_tower = coremltools.models.MLModel(coreml_file[0])
++
+     weights = sanitize_weights(
+         model_class.LanguageModel, weights, model_config.text_config
+     )
+@@ -185,7 +197,21 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
+             class_predicate=class_predicate,
+         )
+ 
+-    model.load_weights(list(weights.items()))
++    if kwargs.get("only_llm", False):
++        # Ignore vision tower weights
++        new_weights = dict()
++        for k, v in weights.items():
++            if 'vision_tower' in k:
++                continue
++            if 'mm_projector' in k:
++                new_k = k.replace('model.mm_projector.', 'multi_modal_projector.linear_')
++                new_weights[new_k] = v
++            else:
++                new_weights['language_model.'+k] = v
++
++        model.load_weights(list(new_weights.items()))
++    else:
++        model.load_weights(list(weights.items()))
+     if not lazy:
+         mx.eval(model.parameters())
+ 
+@@ -669,11 +695,12 @@ def convert(
+     dequantize: bool = False,
+     skip_vision: bool = False,
+     trust_remote_code: bool = True,
++    only_llm: bool = False
+ ):
+     print("[INFO] Loading")
+     model_path = get_model_path(hf_path, revision=revision)
+     model, config, processor = fetch_from_hub(
+-        model_path, lazy=True, trust_remote_code=trust_remote_code
++        model_path, lazy=True, trust_remote_code=trust_remote_code, only_llm=only_llm
+     )
+ 
+     weights = dict(tree_flatten(model.parameters()))
+@@ -709,6 +736,12 @@ def convert(
+ 
+     save_config(config, config_path=mlx_path / "config.json")
+ 
++    # Copy over any coreml files if found
++    coreml_files = glob.glob(str(model_path / "*.mlpackage"))
++    for file in coreml_files:
++        des_path = os.path.join(mlx_path, file.split(os.path.sep)[-1])
++        shutil.copytree(file, des_path)
++
+     if upload_repo is not None:
+         upload_to_hub(mlx_path, upload_repo, hf_path)
+ 
