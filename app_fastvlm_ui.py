@@ -330,21 +330,6 @@ if __name__ == "__main__":
     # --- UI 构建 ---
     with gr.Blocks(theme=gr.themes.Soft()) as app_ui:
 
-        # 动态生成语言选项
-        lang_choices = []
-        if I18N_MESSAGES:  # Check if translations were loaded
-            for code, translations in I18N_MESSAGES.items():
-                display_name = translations.get("lang_display_name", code.upper())
-                lang_choices.append((display_name, code))
-        else:  # Fallback if no translations loaded
-            lang_choices = [("English", "en")]
-
-        lang_dropdown = gr.Dropdown(
-            choices=lang_choices,
-            value=current_language_state,
-            label=get_text("lang_label", current_language_state),
-        )
-
         title_md = gr.Markdown(get_text("title", current_language_state))
         desc_md = gr.Markdown(get_text("desc", current_language_state))
 
@@ -358,7 +343,7 @@ if __name__ == "__main__":
                 image_input_ui = gr.Image(
                     type="pil",
                     label=get_text("upload_image", current_language_state),
-                    sources=["upload", "clipboard"],
+                    sources=["upload", "clipboard", "webcam"],
                 )
                 prompt_input_ui = gr.Textbox(
                     label=get_text("prompt_label", current_language_state),
@@ -410,6 +395,20 @@ if __name__ == "__main__":
                     interactive=False,
                     show_copy_button=True,
                 )
+        # 动态生成语言选项
+        lang_choices = []
+        if I18N_MESSAGES:  # Check if translations were loaded
+            for code, translations in I18N_MESSAGES.items():
+                display_name = translations.get("lang_display_name", code.upper())
+                lang_choices.append((display_name, code))
+        else:  # Fallback if no translations loaded
+            lang_choices = [("English", "en")]
+
+        lang_dropdown = gr.Dropdown(
+            choices=lang_choices,
+            value=current_language_state,
+            label=get_text("lang_label", current_language_state),
+        )
 
         # --- 语言切换回调 ---
         def on_lang_change_handler(new_lang):
