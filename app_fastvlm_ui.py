@@ -202,6 +202,20 @@ def load_model_globally(model_path_str, model_base_str=None):
         MODEL.generation_config.pad_token_id = TOKENIZER.pad_token_id
 
 
+def unload_model_globally():
+    """卸载当前加载的模型并释放资源。"""
+    global MODEL, TOKENIZER, IMAGE_PROCESSOR, CONTEXT_LEN, MODEL_NAME_GLOBAL, MODEL_CONFIG
+    MODEL = None
+    TOKENIZER = None
+    IMAGE_PROCESSOR = None
+    CONTEXT_LEN = None
+    MODEL_NAME_GLOBAL = None
+    MODEL_CONFIG = None
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return get_text("model_unloaded_success", current_language_state)
+
+
 # --- Gradio 的模型下载包装器 (现在使用 model_downloader) ---
 def download_model_gradio_wrapper(
     model_name_to_download, progress=gr.Progress(track_tqdm=True)
@@ -404,7 +418,7 @@ if __name__ == "__main__":
         pass
 
     # --- UI 构建 ---
-    with gr.Blocks(theme=gr.themes.Soft()) as app_ui:
+    with gr.Blocks(theme="gradio/miku") as app_ui:  # 应用 Miku 主题
 
         title_md = gr.Markdown(get_text("title", current_language_state))
         desc_md = gr.Markdown(get_text("desc", current_language_state))
@@ -444,6 +458,18 @@ if __name__ == "__main__":
                         else (ALL_MODEL_PATHS[0] if ALL_MODEL_PATHS else None)
                     ),
                     label=get_text("select_model", current_language_state),
+                )
+                unload_button_ui = gr.Button(  # 新增卸载模型按钮
+                    get_text("unload_model_button", current_language_state),
+                    variant="stop",  # 使用停止/危险按钮样式
+                )
+                model_status_text_ui = gr.Textbox(  # 新增模型状态文本框
+                    label=get_text(
+                        "model_load_unload_status_label", current_language_state
+                    ),
+                    interactive=False,
+                    lines=2,  # 状态信息通常不需要太长
+                    value="",  # 初始为空
                 )
                 image_input_ui = gr.Image(
                     type="pil",
@@ -531,6 +557,12 @@ if __name__ == "__main__":
                 gr.update(label=get_text("download_status_label", new_lang)),
                 # 主要模型选择和其他组件
                 gr.update(label=get_text("select_model", new_lang)),
+                gr.update(
+                    value=get_text("unload_model_button", new_lang)
+                ),  # 更新卸载按钮文本
+                gr.update(
+                    label=get_text("model_load_unload_status_label", new_lang)
+                ),  # 更新模型状态标签
                 gr.update(label=get_text("upload_image", new_lang)),
                 gr.update(
                     label=get_text("prompt_label", new_lang),
@@ -563,6 +595,8 @@ if __name__ == "__main__":
                 download_status_ui,
                 # 主要模型选择和其他组件
                 model_selector_ui,
+                unload_button_ui,  # 添加卸载按钮到输出列表
+                model_status_text_ui,  # 添加模型状态文本框到输出列表
                 image_input_ui,
                 prompt_input_ui,
                 adv_params_accordion,
@@ -707,19 +741,17 @@ if __name__ == "__main__":
             load_model_globally(new_model_path, model_base_str=DEFAULT_MODEL_BASE)
             lang = current_language_state
             if MODEL:  # Check if model loaded successfully
+                # 清空之前的状态消息，或显示成功加载消息
                 return get_text("model_switched", lang, model_path=new_model_path)
             else:
                 return get_text(
                     "error_model_load_failed", lang, model_path=new_model_path
                 )
 
-        model_change_output = gr.Textbox(
-            visible=False
-        )  # This receives the "model_switched" message
-        model_selector_ui.change(
+        model_selector_ui.change(  # 更新: model_change_output 现在是 model_status_text_ui
             fn=on_model_change,
             inputs=[model_selector_ui],
-            outputs=model_change_output,
+            outputs=model_status_text_ui,  # 输出到新的状态文本框
         )
 
         # 模型下载按钮点击事件
@@ -741,6 +773,13 @@ if __name__ == "__main__":
             ],
             outputs=output_text_ui,
             api_name="generate_description",
+        )
+
+        # 卸载模型按钮点击事件
+        unload_button_ui.click(
+            fn=unload_model_globally,
+            inputs=[],
+            outputs=model_status_text_ui,  # 输出到模型状态文本框
         )
 
     app_ui.launch(server_name="0.0.0.0", share=False)
