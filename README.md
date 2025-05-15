@@ -6,7 +6,11 @@ This is a focused version of the FastVLM repository, configured to run a Gradio-
 ### Highlights
 
 - FastVLM introduces FastViTHD, a novel hybrid vision encoder for efficient processing of high-resolution images, leading to faster performance.
-- This repository provides a Gradio Web UI (`app_fastvlm_ui.py`) for easy interaction with FastVLM models.
+- This repository provides a Gradio Web UI (`app_fastvlm_ui.py`) for easy interaction with FastVLM models, featuring:
+  - **In-UI Model Downloader**: Easily download and manage pre-trained models directly within the application.
+  - **Automatic Device Selection**: Optimally utilizes available hardware (CUDA, MPS, or CPU).
+  - **Multi-language Support**: Interface available in multiple languages.
+  - **Interactive Controls**: Adjust generation parameters like temperature, top-p, and beam search.
 
 ## Model Zoo
 
@@ -37,42 +41,12 @@ The following table lists available pre-trained FastVLM models. For detailed inf
     This project requires Python 3.10 or higher.
     ```bash
     pip install -r requirements.txt
-    pip install -e .  # Installs the llava package from the local directory
+    # The following command installs the llava package from the local directory
+    # and is necessary for the application to run correctly.
+    pip install -e .
     ```
 
-## Download Pretrained Models
-
-1.  **Choose a model** from the Model Zoo table above and download its Pytorch Checkpoint. For example, to download `FastVLM-0.5B (Stage 3)`:
-
-    ```bash
-    wget https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_0.5b_stage3.zip
-    ```
-
-2.  **Create a directory** to store your models, for example, `model/` in the root of this project:
-
-    ```bash
-    mkdir -p model
-    ```
-
-3.  **Unzip the downloaded model** into the created directory.
-
-    ```bash
-    unzip llava-fastvithd_0.5b_stage3.zip -d model/
-    # This should create a sub-directory, e.g., model/llava-fastvithd_0.5b_stage3
-    ```
-
-4.  **Configure the model path in the script:**
-    Open the `app_fastvlm_ui.py` script and locate the `DEFAULT_MODEL_PATH` variable.
-    Update its value to the path of the model checkpoint directory you just downloaded and unzipped.
-    For example, if you placed the model in `model/llava-fastvithd_0.5b_stage3/`, you should change the line to:
-    ```python
-    DEFAULT_MODEL_PATH = "model/llava-fastvithd_0.5b_stage3/"
-    ```
-    Ensure this path is correct for the script to load the model.
-
-## Running the Web UI
-
-After completing the setup and model configuration:
+## Using the Web UI
 
 1.  **Start the Gradio web server:**
 
@@ -80,22 +54,41 @@ After completing the setup and model configuration:
     python app_fastvlm_ui.py
     ```
 
-    The script will load the model (which may take some time) and then start the web server.
+    The script will automatically detect the optimal device (CUDA, MPS, or CPU) and then start the web server. The first time you run the UI, or if no models are found in the `model/` directory, it might take a moment to populate model choices.
 
 2.  **Open the UI in your browser:**
     Once the server is running, it will typically print a local URL to the console, such as `Running on local URL:  http://0.0.0.0:7860` or `http://127.0.0.1:7860`. Open this URL in your web browser.
 
-### How to use the Web UI:
+    ![FastVLM Web UI Screenshot](./img/webui_example.jpeg)
 
-- **Upload Image:** On the left panel, click the "Upload Image" area to browse for an image file, or drag and drop an image. You can also paste an image directly from your clipboard.
-- **Enter Prompt:** Below the image upload, type your question or instruction for the model in the "Enter prompt" textbox (e.g., "Describe the image in detail", "How many cats are in the picture?"). The default prompt is "Describe the image.".
-- **Adjust Parameters (Optional):** If needed, expand the "Advanced Parameters" accordion menu to adjust settings like:
-  - `Temperature`: Controls randomness. Lower is more deterministic.
-  - `Top P`: Nucleus sampling parameter. Set to 0 or 1 to disable.
-  - `Num Beams`: Number of beams for beam search. 1 means no beam search.
-  - `Conversation Mode`: Selects the conversation template.
-- **Generate Description:** Click the "Generate Description" button.
-- **View Output:** The model's generated text will appear in the "Model Output" textbox on the right panel. You can use the "Copy" button to copy the output.
+### Interacting with the Web UI:
+
+The Web UI is organized into several key areas:
+
+- **Model Management (Top Section):**
+
+  - **Select Model to Download:** Choose a model from the dropdown list provided in the "Model Zoo" section of this README.
+  - **Download Model:** Click this button to download the selected model. Progress will be shown, and upon completion, the model will be available in the "Select Model to Load" dropdown. Models are saved to the `model/` directory.
+  - **Select Model to Load:** After downloading, or if you have manually placed models in the `model/` directory, select the desired model from this dropdown.
+  - **Load Model:** Click to load the selected model into memory. This may take some time. A confirmation message will appear.
+  - **Unload Model:** Click to free up resources by unloading the currently active model.
+  - **Language Selection (语/言/Lang):** Choose your preferred interface language from the dropdown (e.g., English, 中文).
+
+- **Image Interaction (Main Section):**
+  - **Upload Image (Left Panel):** Click the "Upload Image" area to browse for an image file, or drag and drop an image. You can also paste an image directly from your clipboard or use the webcam input if available.
+  - **Enter Prompt (Left Panel):** Below the image, type your question or instruction for the model in the "Enter prompt" textbox (e.g., "Describe the image in detail", "How many cats are in the picture?"). The default prompt is "Describe this image." (or its translation).
+  - **Advanced Parameters (Left Panel, Collapsible):** If needed, expand the "Advanced Parameters" accordion menu to adjust settings like:
+    - `Temperature`: Controls randomness. Lower is more deterministic.
+    - `Top P`: Nucleus sampling parameter. Set to 1.0 to disable.
+    - `Num Beams`: Number of beams for beam search. 1 means no beam search.
+    - `Conversation Mode`: Selects the conversation template suitable for the loaded model.
+  - **Generate Description (Left Panel):** Click the "Generate Description" button.
+  - **Model Output (Right Panel):** The model's generated text will appear in the "Model Output" textbox. You can use the "Copy" button to copy the output or "Clear" to empty the textbox.
+
+**Note on Models:**
+
+- The UI dynamically scans the `model/` directory for available models. If you manually add models, ensure they are in subdirectories within `model/` (e.g., `model/your_model_name/`).
+- The first model in the "Select Model to Load" dropdown is often selected by default when the UI starts, but it might not be automatically loaded. Always ensure you click "Load Model" for the desired model.
 
 ## Citation
 
