@@ -418,40 +418,16 @@ if __name__ == "__main__":
         pass
 
     # --- UI 构建 ---
-    with gr.Blocks(theme="gradio/miku") as app_ui:  # 应用 Miku 主题
+    with gr.Blocks(theme="NoCrypt/miku") as app_ui:  # 应用 Miku 主题
 
         title_md = gr.Markdown(get_text("title", current_language_state))
         desc_md = gr.Markdown(get_text("desc", current_language_state))
 
-        with gr.Row():
-            with gr.Column(scale=1):
-                # 模型下载 UI
-                with gr.Group():  # 将下载相关的组件分组
-                    model_download_header_md = gr.Markdown(
-                        get_text("model_download_header", current_language_state)
-                    )
-                    model_download_selector_ui = gr.Dropdown(
-                        choices=list(
-                            model_downloader.MODEL_DOWNLOAD_LINKS.keys()
-                        ),  # 使用导入的链接
-                        label=get_text(
-                            "select_model_to_download", current_language_state
-                        ),
-                        value=None,
-                    )
-                    download_button_ui = gr.Button(
-                        get_text("download_model_button", current_language_state),
-                        variant="secondary",  # 使用次要按钮样式
-                    )
-                    download_status_ui = gr.Textbox(
-                        label=get_text("download_status_label", current_language_state),
-                        interactive=False,
-                        lines=3,  # 允许多行状态信息
-                    )
-
+        with gr.Row():  # 主要输入输出区域
+            with gr.Column(scale=1):  # 左侧输入列
                 # 已有模型选择器
                 model_selector_ui = gr.Dropdown(
-                    choices=ALL_MODEL_PATHS,  # 这个会由下载器更新
+                    choices=ALL_MODEL_PATHS,
                     value=(
                         DEFAULT_MODEL_PATH
                         if DEFAULT_MODEL_PATH in ALL_MODEL_PATHS
@@ -459,17 +435,17 @@ if __name__ == "__main__":
                     ),
                     label=get_text("select_model", current_language_state),
                 )
-                unload_button_ui = gr.Button(  # 新增卸载模型按钮
+                unload_button_ui = gr.Button(
                     get_text("unload_model_button", current_language_state),
-                    variant="stop",  # 使用停止/危险按钮样式
+                    variant="stop",
                 )
-                model_status_text_ui = gr.Textbox(  # 新增模型状态文本框
+                model_status_text_ui = gr.Textbox(
                     label=get_text(
                         "model_load_unload_status_label", current_language_state
                     ),
                     interactive=False,
-                    lines=2,  # 状态信息通常不需要太长
-                    value="",  # 初始为空
+                    lines=2,
+                    value="",
                 )
                 image_input_ui = gr.Image(
                     type="pil",
@@ -508,9 +484,7 @@ if __name__ == "__main__":
                         label=get_text("num_beams", current_language_state),
                     )
                     conv_mode_ui = gr.Dropdown(
-                        choices=sorted(
-                            list(conv_templates.keys())
-                        ),  # conv_templates might not be available if LLaVA fails
+                        choices=sorted(list(conv_templates.keys())),
                         value=DEFAULT_CONV_MODE,
                         label=get_text("conv_mode", current_language_state),
                     )
@@ -519,27 +493,48 @@ if __name__ == "__main__":
                     get_text("submit", current_language_state), variant="primary"
                 )
 
-            with gr.Column(scale=1):
+            with gr.Column(scale=1):  # 右侧输出列
                 output_text_ui = gr.Textbox(
                     label=get_text("output", current_language_state),
-                    lines=15,
+                    lines=15,  # 保持足够的行数
                     interactive=False,
                     show_copy_button=True,
                 )
-        # 动态生成语言选项
-        lang_choices = []
-        if I18N_MESSAGES:  # Check if translations were loaded
-            for code, translations in I18N_MESSAGES.items():
-                display_name = translations.get("lang_display_name", code.upper())
-                lang_choices.append((display_name, code))
-        else:  # Fallback if no translations loaded
-            lang_choices = [("English", "en")]
+                # 模型下载 UI (移动到右侧输出列下方)
+                with gr.Group():
+                    model_download_selector_ui = gr.Dropdown(
+                        choices=list(model_downloader.MODEL_DOWNLOAD_LINKS.keys()),
+                        label=get_text(
+                            "select_model_to_download", current_language_state
+                        ),
+                        value=None,
+                    )
+                    download_button_ui = gr.Button(
+                        get_text("download_model_button", current_language_state),
+                        variant="secondary",
+                    )
+                    download_status_ui = gr.Textbox(
+                        label=get_text("download_status_label", current_language_state),
+                        interactive=False,
+                        lines=3,
+                    )
 
-        lang_dropdown = gr.Dropdown(
-            choices=lang_choices,
-            value=current_language_state,
-            label=get_text("lang_label", current_language_state),
-        )
+                # 语言选择 (也移动到右侧列，下载区域下方)
+                lang_choices = []
+                if I18N_MESSAGES:
+                    for code, translations in I18N_MESSAGES.items():
+                        display_name = translations.get(
+                            "lang_display_name", code.upper()
+                        )
+                        lang_choices.append((display_name, code))
+                else:
+                    lang_choices = [("English", "en")]
+
+                lang_dropdown = gr.Dropdown(
+                    choices=lang_choices,
+                    value=current_language_state,
+                    label=get_text("lang_label", current_language_state),
+                )
 
         # --- 语言切换回调 ---
         def on_lang_change_handler(new_lang):
@@ -550,8 +545,7 @@ if __name__ == "__main__":
                 gr.update(label=get_text("lang_label", new_lang)),
                 gr.update(value=get_text("title", new_lang)),
                 gr.update(value=get_text("desc", new_lang)),
-                # 模型下载UI更新 (先于模型选择，因为它们在UI中靠前)
-                gr.update(value=get_text("model_download_header", new_lang)),
+                # 模型下载UI更新
                 gr.update(label=get_text("select_model_to_download", new_lang)),
                 gr.update(value=get_text("download_model_button", new_lang)),
                 gr.update(label=get_text("download_status_label", new_lang)),
@@ -578,6 +572,26 @@ if __name__ == "__main__":
                 gr.update(label=get_text("conv_mode", new_lang)),
                 gr.update(value=get_text("submit", new_lang)),
                 gr.update(label=get_text("output", new_lang)),
+                lang_dropdown,
+                title_md,
+                desc_md,
+                # 模型下载UI组件更新 (顺序根据UI布局调整)
+                model_download_selector_ui,
+                download_button_ui,
+                download_status_ui,
+                # 主要模型选择和其他组件
+                model_selector_ui,
+                unload_button_ui,  # 添加卸载按钮到输出列表
+                model_status_text_ui,  # 添加模型状态文本框到输出列表
+                image_input_ui,
+                prompt_input_ui,
+                adv_params_accordion,
+                temperature_ui,
+                top_p_ui,
+                num_beams_ui,
+                conv_mode_ui,
+                submit_button_ui,
+                output_text_ui,
             ]
             return updates
 
@@ -588,8 +602,7 @@ if __name__ == "__main__":
                 lang_dropdown,
                 title_md,
                 desc_md,
-                # 模型下载UI组件更新
-                model_download_header_md,
+                # 模型下载UI组件更新 (顺序根据UI布局调整)
                 model_download_selector_ui,
                 download_button_ui,
                 download_status_ui,
@@ -748,17 +761,20 @@ if __name__ == "__main__":
                     "error_model_load_failed", lang, model_path=new_model_path
                 )
 
-        model_selector_ui.change(  # 更新: model_change_output 现在是 model_status_text_ui
+        model_selector_ui.change(
             fn=on_model_change,
             inputs=[model_selector_ui],
-            outputs=model_status_text_ui,  # 输出到新的状态文本框
+            outputs=model_status_text_ui,
         )
 
         # 模型下载按钮点击事件
         download_button_ui.click(
             fn=download_model_gradio_wrapper,
             inputs=[model_download_selector_ui],
-            outputs=[download_status_ui, model_selector_ui],
+            outputs=[
+                download_status_ui,
+                model_selector_ui,
+            ],  # 确保 model_selector_ui 也在此处更新
         )
 
         submit_button_ui.click(
