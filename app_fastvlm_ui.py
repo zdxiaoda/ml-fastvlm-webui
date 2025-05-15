@@ -7,6 +7,11 @@ import gradio as gr
 import atexit
 import json
 import glob
+import requests
+import zipfile
+import shutil
+import threading
+import queue
 
 # LLaVA 相关导入 (从 predict.py 复制)
 from llava.utils import disable_torch_init
@@ -23,6 +28,9 @@ from llava.constants import (  # 用于 predict_ui
     DEFAULT_IM_START_TOKEN,
     DEFAULT_IM_END_TOKEN,
 )
+
+# --- 从新的下载器模块导入 ---
+import model_downloader  # 直接导入模块
 
 # --- 国际化支持 ---
 LOCALES_DIR = "locales"  # 存储翻译文件的目录
@@ -89,21 +97,10 @@ MODEL_NAME_GLOBAL = None  # 存储全局加载的模型名称
 MODEL_CONFIG = None  # 全局存储 model.config
 
 # --- 默认路径和参数 (来自用户命令和 predict.py 的默认值) ---
-# 自动遍历 model 目录下所有子文件夹作为可选模型
-MODEL_ROOT_DIR = "model"
+MODEL_ROOT_DIR = "model"  # 这个常量仍然可以在这里，或者也从 model_downloader 获取
 
-
-def get_all_model_dirs():
-    if not os.path.exists(MODEL_ROOT_DIR):
-        return []
-    return [
-        os.path.join(MODEL_ROOT_DIR, d)
-        for d in os.listdir(MODEL_ROOT_DIR)
-        if os.path.isdir(os.path.join(MODEL_ROOT_DIR, d))
-    ]
-
-
-ALL_MODEL_PATHS = get_all_model_dirs()
+# 使用 model_downloader 中的函数初始化 ALL_MODEL_PATHS
+ALL_MODEL_PATHS = model_downloader.get_model_paths()
 DEFAULT_MODEL_PATH = ALL_MODEL_PATHS[0] if ALL_MODEL_PATHS else None
 DEFAULT_MODEL_BASE = None  # 来自 predict.py args 的默认值
 DEFAULT_CONV_MODE = "qwen_2"  # 来自 predict.py args 的默认值
@@ -205,6 +202,82 @@ def load_model_globally(model_path_str, model_base_str=None):
         MODEL.generation_config.pad_token_id = TOKENIZER.pad_token_id
 
 
+# --- Gradio 的模型下载包装器 (现在使用 model_downloader) ---
+def download_model_gradio_wrapper(
+    model_name_to_download, progress=gr.Progress(track_tqdm=True)
+):
+    """Gradio 包装器，用于启动模型下载线程并处理 UI 更新。"""
+    global ALL_MODEL_PATHS  # 声明全局变量以便修改
+
+    if not model_name_to_download:
+        # 如果模型列表可能已过时，可以考虑刷新
+        # current_paths = model_downloader.get_model_paths()
+        # if set(ALL_MODEL_PATHS) != set(current_paths):
+        #     ALL_MODEL_PATHS = current_paths
+        return get_text(
+            "error_no_model_selected_for_download", current_language_state
+        ), gr.update(choices=ALL_MODEL_PATHS)
+
+    url = model_downloader.MODEL_DOWNLOAD_LINKS.get(model_name_to_download)
+    if not url:
+        # current_paths = model_downloader.get_model_paths()
+        # if set(ALL_MODEL_PATHS) != set(current_paths):
+        #     ALL_MODEL_PATHS = current_paths
+        return get_text(
+            "error_model_url_not_found",
+            current_language_state,
+            model_name=model_name_to_download,
+        ), gr.update(choices=ALL_MODEL_PATHS)
+
+    update_q = queue.Queue()
+
+    thread = threading.Thread(
+        target=model_downloader._perform_download_and_extraction_task,
+        args=(model_name_to_download, url, update_q),
+    )
+    thread.start()
+
+    status_message = get_text(
+        "download_queued", current_language_state, model_name=model_name_to_download
+    )
+    # 初始化 model_selector_update_dict，使用当前的 ALL_MODEL_PATHS
+    # 这个 ALL_MODEL_PATHS 应该在接收到 'selector_update_info' 时被更新
+    model_selector_update_dict = {
+        "choices": ALL_MODEL_PATHS,
+        "value": DEFAULT_MODEL_PATH if DEFAULT_MODEL_PATH in ALL_MODEL_PATHS else None,
+    }
+
+    while thread.is_alive() or not update_q.empty():
+        try:
+            item = update_q.get(timeout=0.1 if thread.is_alive() else 0.01)
+            message_type, *payload = item
+
+            if message_type == "status":
+                key, kwargs_dict = payload
+                status_message = get_text(key, current_language_state, **kwargs_dict)
+            elif message_type == "selector_update_info":
+                (update_info,) = payload
+                if "choices" in update_info:
+                    ALL_MODEL_PATHS = update_info["choices"]  # 更新全局列表
+                model_selector_update_dict = (
+                    update_info  # 保存整个字典以供 gr.update 使用
+                )
+            elif message_type == "finished":
+                # 'finished' 信号，确保在退出循环前产生最后一次更新
+                # 最终的状态信息应该已经在 'status' 更新中设置好了
+                pass  # 将在下一次迭代或循环结束时产生
+
+            yield status_message, gr.update(**model_selector_update_dict)
+
+        except queue.Empty:
+            if not thread.is_alive() and update_q.empty():
+                break  # 线程结束且队列为空，退出
+
+    # 确保返回最终状态给 Gradio outputs
+    # 此时 status_message 和 model_selector_update_dict 应该是最新的
+    yield status_message, gr.update(**model_selector_update_dict)
+
+
 # --- Gradio 的预测函数 (旧版，错误信息改为英文) ---
 def generate_description(
     image_input_pil,
@@ -293,8 +366,11 @@ def generate_description(
 
 # --- 主要 Gradio 应用设置 ---
 if __name__ == "__main__":
-    if not ALL_MODEL_PATHS:
-        raise RuntimeError(get_text("error_no_model_found", current_language_state))
+    if not ALL_MODEL_PATHS and not model_downloader.MODEL_DOWNLOAD_LINKS:
+        # 修改: 如果本地没有模型且没有可供下载的链接，则报错
+        raise RuntimeError(
+            get_text("error_no_model_found_or_downloadable", current_language_state)
+        )
 
     # 处理 generation_config.json 路径
     def update_gen_config_paths(model_path):
@@ -335,9 +411,38 @@ if __name__ == "__main__":
 
         with gr.Row():
             with gr.Column(scale=1):
+                # 模型下载 UI
+                with gr.Group():  # 将下载相关的组件分组
+                    model_download_header_md = gr.Markdown(
+                        get_text("model_download_header", current_language_state)
+                    )
+                    model_download_selector_ui = gr.Dropdown(
+                        choices=list(
+                            model_downloader.MODEL_DOWNLOAD_LINKS.keys()
+                        ),  # 使用导入的链接
+                        label=get_text(
+                            "select_model_to_download", current_language_state
+                        ),
+                        value=None,
+                    )
+                    download_button_ui = gr.Button(
+                        get_text("download_model_button", current_language_state),
+                        variant="secondary",  # 使用次要按钮样式
+                    )
+                    download_status_ui = gr.Textbox(
+                        label=get_text("download_status_label", current_language_state),
+                        interactive=False,
+                        lines=3,  # 允许多行状态信息
+                    )
+
+                # 已有模型选择器
                 model_selector_ui = gr.Dropdown(
-                    choices=ALL_MODEL_PATHS,
-                    value=DEFAULT_MODEL_PATH,
+                    choices=ALL_MODEL_PATHS,  # 这个会由下载器更新
+                    value=(
+                        DEFAULT_MODEL_PATH
+                        if DEFAULT_MODEL_PATH in ALL_MODEL_PATHS
+                        else (ALL_MODEL_PATHS[0] if ALL_MODEL_PATHS else None)
+                    ),
                     label=get_text("select_model", current_language_state),
                 )
                 image_input_ui = gr.Image(
@@ -419,13 +524,19 @@ if __name__ == "__main__":
                 gr.update(label=get_text("lang_label", new_lang)),
                 gr.update(value=get_text("title", new_lang)),
                 gr.update(value=get_text("desc", new_lang)),
+                # 模型下载UI更新 (先于模型选择，因为它们在UI中靠前)
+                gr.update(value=get_text("model_download_header", new_lang)),
+                gr.update(label=get_text("select_model_to_download", new_lang)),
+                gr.update(value=get_text("download_model_button", new_lang)),
+                gr.update(label=get_text("download_status_label", new_lang)),
+                # 主要模型选择和其他组件
                 gr.update(label=get_text("select_model", new_lang)),
                 gr.update(label=get_text("upload_image", new_lang)),
                 gr.update(
                     label=get_text("prompt_label", new_lang),
                     value=get_text("default_prompt", new_lang),
                 ),
-                gr.update(label=get_text("adv_params", new_lang)),  # Accordion title
+                gr.update(label=get_text("adv_params", new_lang)),
                 gr.update(label=get_text("temperature", new_lang)),
                 gr.update(
                     label=get_text("top_p", new_lang),
@@ -433,7 +544,7 @@ if __name__ == "__main__":
                 ),
                 gr.update(label=get_text("num_beams", new_lang)),
                 gr.update(label=get_text("conv_mode", new_lang)),
-                gr.update(value=get_text("submit", new_lang)),  # Button text
+                gr.update(value=get_text("submit", new_lang)),
                 gr.update(label=get_text("output", new_lang)),
             ]
             return updates
@@ -441,14 +552,20 @@ if __name__ == "__main__":
         lang_dropdown.change(
             fn=on_lang_change_handler,
             inputs=[lang_dropdown],
-            outputs=[  # Ensure all components that need text updates are listed here
+            outputs=[  # Ensure all components that need text updates are listed here in correct order
                 lang_dropdown,
                 title_md,
                 desc_md,
+                # 模型下载UI组件更新
+                model_download_header_md,
+                model_download_selector_ui,
+                download_button_ui,
+                download_status_ui,
+                # 主要模型选择和其他组件
                 model_selector_ui,
                 image_input_ui,
                 prompt_input_ui,
-                adv_params_accordion,  # Accordion itself for its label
+                adv_params_accordion,
                 temperature_ui,
                 top_p_ui,
                 num_beams_ui,
@@ -556,12 +673,45 @@ if __name__ == "__main__":
 
         # 切换模型时自动加载新模型
         def on_model_change(new_model_path):
-            update_gen_config_paths(
-                new_model_path
-            )  # This function now only updates paths
+            # 此函数在用户从下拉列表选择模型时触发
+            # 或者在模型下载并自动选中后，由Gradio的 .change() 触发
+            if not new_model_path or not os.path.exists(new_model_path):
+                # 如果路径无效，可以显示错误或不执行任何操作
+                # For now, if path is invalid, model loading will fail gracefully or use previous.
+                # The dropdown should ideally only contain valid paths.
+                return get_text(
+                    "error_invalid_model_path_selected",
+                    current_language_state,
+                    path=new_model_path,
+                )
+
+            _restore_generation_config_on_exit()  # Restore previous before renaming for new one
+            update_gen_config_paths(new_model_path)
+            # Rename new model's generation_config if exists
+            if os.path.exists(_initial_gen_config_original_path):
+                try:
+                    os.rename(
+                        _initial_gen_config_original_path,
+                        _initial_gen_config_backup_path,
+                    )
+                    _renamed_generation_config_globally = (
+                        True  # Mark that we renamed for current model
+                    )
+                except OSError:
+                    pass  # logging.warning(f"Could not rename new generation_config.json: {e}")
+            else:
+                _renamed_generation_config_globally = (
+                    False  # No file to rename for this model
+                )
+
             load_model_globally(new_model_path, model_base_str=DEFAULT_MODEL_BASE)
             lang = current_language_state
-            return get_text("model_switched", lang, model_path=new_model_path)
+            if MODEL:  # Check if model loaded successfully
+                return get_text("model_switched", lang, model_path=new_model_path)
+            else:
+                return get_text(
+                    "error_model_load_failed", lang, model_path=new_model_path
+                )
 
         model_change_output = gr.Textbox(
             visible=False
@@ -570,6 +720,13 @@ if __name__ == "__main__":
             fn=on_model_change,
             inputs=[model_selector_ui],
             outputs=model_change_output,
+        )
+
+        # 模型下载按钮点击事件
+        download_button_ui.click(
+            fn=download_model_gradio_wrapper,
+            inputs=[model_download_selector_ui],
+            outputs=[download_status_ui, model_selector_ui],
         )
 
         submit_button_ui.click(
