@@ -1,81 +1,110 @@
 # FastVLM: Efficient Vision Encoding for Vision Language Models
 
-This is the official repository of
+This is a focused version of the FastVLM repository, configured to run a Gradio-based Web UI for image description. For full details on the original project and research, please refer to:
 **[FastVLM: Efficient Vision Encoding for Vision Language Models](https://www.arxiv.org/abs/2412.13303). (CVPR 2025)**
 
-[//]: # (![FastViTHD Performance]&#40;docs/acc_vs_latency_qwen-2.png&#41;)
-<p align="center">
-<img src="docs/acc_vs_latency_qwen-2.png" alt="Accuracy vs latency figure." width="400"/>
-</p>
-
 ### Highlights
-* We introduce FastViTHD, a novel hybrid vision encoder designed to output fewer tokens and significantly reduce encoding time for high-resolution images.  
-* Our smallest variant outperforms LLaVA-OneVision-0.5B with 85x faster Time-to-First-Token (TTFT) and 3.4x smaller vision encoder.
-* Our larger variants using Qwen2-7B LLM outperform recent works like Cambrian-1-8B while using a single image encoder with a 7.9x faster TTFT.
-* Demo iOS app to demonstrate the performance of our model on a mobile device.
 
-<table>
-<tr>
-    <td><img src="docs/fastvlm-counting.gif" alt="FastVLM - Counting"></td>
-    <td><img src="docs/fastvlm-handwriting.gif" alt="FastVLM - Handwriting"></td>
-    <td><img src="docs/fastvlm-emoji.gif" alt="FastVLM - Emoji"></td>
-</tr>
-</table>
+- FastVLM introduces FastViTHD, a novel hybrid vision encoder for efficient processing of high-resolution images, leading to faster performance.
+- This repository provides a Gradio Web UI (`app_fastvlm_ui.py`) for easy interaction with FastVLM models.
 
-## Getting Started
-We use LLaVA codebase to train FastVLM variants. In order to train or finetune your own variants, 
-please follow instructions provided in [LLaVA](https://github.com/haotian-liu/LLaVA) codebase. 
-We provide instructions for running inference with our models.   
+## Model Zoo
 
-### Setup
-```bash
-conda create -n fastvlm python=3.10
-conda activate fastvlm
-pip install -e .
-```
+The following table lists available pre-trained FastVLM models. For detailed information on various evaluations, please refer to the [paper](https://www.arxiv.org/abs/2412.13303).
 
-### Model Zoo
-For detailed information on various evaluations, please refer to our [paper](https://www.arxiv.org/abs/2412.13303).
-
-| Model        | Stage |                                            Pytorch Checkpoint (url)                                             |
-|:-------------|:-----:|:---------------------------------------------------------------------------------------------------------------:|
+| Model        | Stage |                                       Pytorch Checkpoint (url)                                        |
+| :----------- | :---: | :---------------------------------------------------------------------------------------------------: |
 | FastVLM-0.5B |   2   | [fastvlm_0.5b_stage2](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_0.5b_stage2.zip) |
 |              |   3   | [fastvlm_0.5b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_0.5b_stage3.zip) |
 | FastVLM-1.5B |   2   | [fastvlm_1.5b_stage2](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_1.5b_stage2.zip) |
-|              |   3   | [fastvlm_1.5b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_1.5b_stage3.zip)  |
-| FastVLM-7B   |   2   | [fastvlm_7b_stage2](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_7b_stage2.zip)  |
-|              |   3   | [fastvlm_7b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_7b_stage3.zip)  |
+|              |   3   | [fastvlm_1.5b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_1.5b_stage3.zip) |
+| FastVLM-7B   |   2   |   [fastvlm_7b_stage2](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_7b_stage2.zip)   |
+|              |   3   |   [fastvlm_7b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_7b_stage3.zip)   |
 
-To download all the pretrained checkpoints run the command below (note that this might take some time depending on your connection so might be good to grab ☕️ while you wait).
+## Setup
 
-```bash
-bash get_models.sh   # Files will be downloaded to `checkpoints` directory.
-```
+1.  **Clone the repository (if you haven't already):**
 
-### Usage Example
-To run inference of PyTorch checkpoint, follow the instruction below
-```bash
-python predict.py --model-path /path/to/checkpoint-dir \
-                  --image-file /path/to/image.png \
-                  --prompt "Describe the image."
-```
+    ```bash
+    # git clone <repository-url>
+    # cd <repository-name>
+    ```
 
-### Inference on Apple Silicon
-To run inference on Apple Silicon, pytorch checkpoints have to be exported to format 
-suitable for running on Apple Silicon, detailed instructions and code can be found [`model_export`](model_export/) subfolder.
-Please see the README there for more details.
+2.  **Create a Python environment and activate it (e.g., using Conda):**
 
-For convenience, we provide 3 models that are in Apple Silicon compatible format: [fastvlm_0.5b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_0.5b_stage3_llm.fp16.zip), 
-[fastvlm_1.5b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_1.5b_stage3_llm.int8.zip), 
-[fastvlm_7b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_7b_stage3_llm.int4.zip). 
-We encourage developers to export the model of their choice with the appropriate quantization levels following 
-the instructions in [`model_export`](model_export/).
+    ```bash
+    conda create -n fastvlm_ui python=3.10 -y
+    conda activate fastvlm_ui
+    ```
 
-### Inference on Apple Devices
-To run inference on Apple devices like iPhone, iPad or Mac, see [`app`](app/) subfolder for more details.
+3.  **Install dependencies:**
+    This project requires Python 3.10 or higher.
+    ```bash
+    pip install -r requirements.txt
+    pip install -e .  # Installs the llava package from the local directory
+    ```
+
+## Download Pretrained Models
+
+1.  **Choose a model** from the Model Zoo table above and download its Pytorch Checkpoint. For example, to download `FastVLM-0.5B (Stage 3)`:
+
+    ```bash
+    wget https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_0.5b_stage3.zip
+    ```
+
+2.  **Create a directory** to store your models, for example, `model/` in the root of this project:
+
+    ```bash
+    mkdir -p model
+    ```
+
+3.  **Unzip the downloaded model** into the created directory.
+
+    ```bash
+    unzip llava-fastvithd_0.5b_stage3.zip -d model/
+    # This should create a sub-directory, e.g., model/llava-fastvithd_0.5b_stage3
+    ```
+
+4.  **Configure the model path in the script:**
+    Open the `app_fastvlm_ui.py` script and locate the `DEFAULT_MODEL_PATH` variable.
+    Update its value to the path of the model checkpoint directory you just downloaded and unzipped.
+    For example, if you placed the model in `model/llava-fastvithd_0.5b_stage3/`, you should change the line to:
+    ```python
+    DEFAULT_MODEL_PATH = "model/llava-fastvithd_0.5b_stage3/"
+    ```
+    Ensure this path is correct for the script to load the model.
+
+## Running the Web UI
+
+After completing the setup and model configuration:
+
+1.  **Start the Gradio web server:**
+
+    ```bash
+    python app_fastvlm_ui.py
+    ```
+
+    The script will load the model (which may take some time) and then start the web server.
+
+2.  **Open the UI in your browser:**
+    Once the server is running, it will typically print a local URL to the console, such as `Running on local URL:  http://0.0.0.0:7860` or `http://127.0.0.1:7860`. Open this URL in your web browser.
+
+### How to use the Web UI:
+
+- **Upload Image:** On the left panel, click the "上传图片" area to browse for an image file, or drag and drop an image. You can also paste an image directly from your clipboard.
+- **Enter Prompt:** Below the image upload, type your question or instruction for the model in the "输入提示" textbox (e.g., "详细描述图片内容", "图片里有多少只猫？"). The default prompt is "描述这张图片。".
+- **Adjust Parameters (Optional):** If needed, expand the "高级参数设置" accordion menu to adjust settings like:
+  - `温度 (Temperature)`: Controls randomness. Lower is more deterministic.
+  - `Top P`: Nucleus sampling parameter. Set to 0 or 1 to disable.
+  - `束搜索数 (Num Beams)`: Number of beams for beam search. 1 means no beam search.
+  - `对话模式 (Conversation Mode)`: Selects the conversation template.
+- **Generate Description:** Click the "生成描述" button.
+- **View Output:** The model's generated text will appear in the "模型输出" textbox on the right panel. You can use the "复制" button to copy the output.
 
 ## Citation
-If you found this code useful, please cite the following paper:
+
+If you found the original FastVLM work useful, please cite their paper:
+
 ```
 @InProceedings{fastvlm2025,
   author = {Pavan Kumar Anasosalu Vasu, Fartash Faghri, Chun-Liang Li, Cem Koc, Nate True, Albert Antony, Gokul Santhanam, James Gabriel, Peter Grasch, Oncel Tuzel, Hadi Pouransari},
@@ -87,8 +116,9 @@ If you found this code useful, please cite the following paper:
 ```
 
 ## Acknowledgements
-Our codebase is built using multiple opensource contributions, please see [ACKNOWLEDGEMENTS](ACKNOWLEDGEMENTS) for more details. 
+
+This codebase builds upon multiple open-source contributions. Please see [ACKNOWLEDGEMENTS](ACKNOWLEDGEMENTS) for more details from the original project.
 
 ## License
-Please check out the repository [LICENSE](LICENSE) before using the provided code and
-[LICENSE_MODEL](LICENSE_MODEL) for the released models.
+
+Please check out the repository [LICENSE](LICENSE) before using the provided code and [LICENSE_MODEL](LICENSE_MODEL) for the released models (if applicable to the models you download).
