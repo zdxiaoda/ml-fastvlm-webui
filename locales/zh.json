@@ -30,9 +30,11 @@
   "error_invalid_conv": "错误：无效的对话模式 '{conv_mode}'。可用模式: {modes}",
   "error_tokenize": "错误：分词失败 - {err}",
   "error_image_proc": "错误：图像处理失败 - {err}",
-  "error_infer": "错误：模型推理错误 - {err}",
-  "error_invalid_model_path_selected": "错误：所选模型路径 '{path}' 无效或不存在。",
-  "error_model_load_failed": "错误：从路径加载模型失败: {model_path}",
+  "error_infer": "错误：模型推理失败 - {err}",
+  "error_invalid_model_path_selected": "错误：选择的模型路径 '{path}' 无效。",
+  "error_model_load_failed": "错误：加载模型 {model_path} 失败。",
   "error_no_model_found_or_downloadable": "错误：未找到本地模型且无模型可供下载。请检查您的模型配置。",
-  "error_no_model_found": "在 'model' 目录下未找到任何模型文件夹，请先下载模型。"
+  "error_no_model_found": "在 'model' 目录下未找到任何模型文件夹，请先下载模型。",
+  "load_model_button": "加载模型",
+  "model_loaded_success": "模型 {model_path} 已成功加载。"
 }

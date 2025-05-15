@@ -213,7 +213,14 @@ def unload_model_globally():
     MODEL_CONFIG = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return get_text("model_unloaded_success", current_language_state)
+    return (
+        get_text("model_unloaded_success", current_language_state),
+        gr.update(
+            value=get_text("load_model_button", current_language_state),
+            variant="secondary",
+        ),
+        gr.update(interactive=False),  # submit_button
+    )
 
 
 # --- Gradio 的模型下载包装器 (现在使用 model_downloader) ---
@@ -397,25 +404,27 @@ if __name__ == "__main__":
             _initial_model_path_expanded, ".generation_config.json"
         )
 
-    update_gen_config_paths(DEFAULT_MODEL_PATH)
-
-    if os.path.exists(_initial_gen_config_original_path):
-        try:
-            os.rename(
-                _initial_gen_config_original_path, _initial_gen_config_backup_path
-            )
-            _renamed_generation_config_globally = True
-        except OSError:
-            pass
-        except Exception:
-            pass
-
     atexit.register(_restore_generation_config_on_exit)
 
     load_model_globally(DEFAULT_MODEL_PATH, model_base_str=DEFAULT_MODEL_BASE)
 
-    if not MODEL:
-        pass
+    # Update gen_config_paths *after* first load attempt, using the actual path used
+    if DEFAULT_MODEL_PATH:  # Ensure DEFAULT_MODEL_PATH is not None
+        update_gen_config_paths(DEFAULT_MODEL_PATH)
+        if os.path.exists(_initial_gen_config_original_path):
+            try:
+                os.rename(
+                    _initial_gen_config_original_path, _initial_gen_config_backup_path
+                )
+                _renamed_generation_config_globally = True
+            except OSError:
+                pass  # Silently ignore if renaming fails
+            except Exception:
+                pass  # Silently ignore other exceptions
+
+    initial_button_text_key = "unload_model_button" if MODEL else "load_model_button"
+    initial_button_variant = "stop" if MODEL else "secondary"
+    initial_submit_interactive = True if MODEL else False
 
     # --- UI 构建 ---
     with gr.Blocks(theme="NoCrypt/miku") as app_ui:  # 应用 Miku 主题
@@ -436,8 +445,8 @@ if __name__ == "__main__":
                     label=get_text("select_model", current_language_state),
                 )
                 unload_button_ui = gr.Button(
-                    get_text("unload_model_button", current_language_state),
-                    variant="stop",
+                    value=get_text(initial_button_text_key, current_language_state),
+                    variant=initial_button_variant,
                 )
                 model_status_text_ui = gr.Textbox(
                     label=get_text(
@@ -490,7 +499,9 @@ if __name__ == "__main__":
                     )
 
                 submit_button_ui = gr.Button(
-                    get_text("submit", current_language_state), variant="primary"
+                    get_text("submit", current_language_state),
+                    variant="primary",
+                    interactive=initial_submit_interactive,
                 )
 
             with gr.Column(scale=1):  # 右侧输出列
@@ -541,59 +552,56 @@ if __name__ == "__main__":
             global current_language_state
             current_language_state = new_lang
 
-            updates = [
-                gr.update(label=get_text("lang_label", new_lang)),
-                gr.update(value=get_text("title", new_lang)),
-                gr.update(value=get_text("desc", new_lang)),
-                # 模型下载UI更新
-                gr.update(label=get_text("select_model_to_download", new_lang)),
-                gr.update(value=get_text("download_model_button", new_lang)),
-                gr.update(label=get_text("download_status_label", new_lang)),
-                # 主要模型选择和其他组件
-                gr.update(label=get_text("select_model", new_lang)),
+            current_button_text_key = (
+                "unload_model_button" if MODEL else "load_model_button"
+            )
+            current_button_variant = "stop" if MODEL else "secondary"
+
+            # This list of updates must match the order of components in lang_dropdown.change outputs
+            updates_tuple = (
+                gr.update(label=get_text("lang_label", new_lang)),  # lang_dropdown
+                gr.update(value=get_text("title", new_lang)),  # title_md
+                gr.update(value=get_text("desc", new_lang)),  # desc_md
                 gr.update(
-                    value=get_text("unload_model_button", new_lang)
-                ),  # 更新卸载按钮文本
+                    label=get_text("select_model_to_download", new_lang)
+                ),  # model_download_selector_ui
+                gr.update(
+                    value=get_text("download_model_button", new_lang)
+                ),  # download_button_ui
+                gr.update(
+                    label=get_text("download_status_label", new_lang)
+                ),  # download_status_ui
+                gr.update(
+                    label=get_text("select_model", new_lang)
+                ),  # model_selector_ui
+                gr.update(
+                    value=get_text(current_button_text_key, new_lang),
+                    variant=current_button_variant,
+                ),  # unload_button_ui
                 gr.update(
                     label=get_text("model_load_unload_status_label", new_lang)
-                ),  # 更新模型状态标签
-                gr.update(label=get_text("upload_image", new_lang)),
+                ),  # model_status_text_ui
+                gr.update(label=get_text("upload_image", new_lang)),  # image_input_ui
                 gr.update(
                     label=get_text("prompt_label", new_lang),
                     value=get_text("default_prompt", new_lang),
-                ),
-                gr.update(label=get_text("adv_params", new_lang)),
-                gr.update(label=get_text("temperature", new_lang)),
+                ),  # prompt_input_ui
+                gr.update(
+                    label=get_text("adv_params", new_lang)
+                ),  # adv_params_accordion (label only)
+                gr.update(label=get_text("temperature", new_lang)),  # temperature_ui
                 gr.update(
                     label=get_text("top_p", new_lang),
                     info=get_text("top_p_info", new_lang),
-                ),
-                gr.update(label=get_text("num_beams", new_lang)),
-                gr.update(label=get_text("conv_mode", new_lang)),
-                gr.update(value=get_text("submit", new_lang)),
-                gr.update(label=get_text("output", new_lang)),
-                lang_dropdown,
-                title_md,
-                desc_md,
-                # 模型下载UI组件更新 (顺序根据UI布局调整)
-                model_download_selector_ui,
-                download_button_ui,
-                download_status_ui,
-                # 主要模型选择和其他组件
-                model_selector_ui,
-                unload_button_ui,  # 添加卸载按钮到输出列表
-                model_status_text_ui,  # 添加模型状态文本框到输出列表
-                image_input_ui,
-                prompt_input_ui,
-                adv_params_accordion,
-                temperature_ui,
-                top_p_ui,
-                num_beams_ui,
-                conv_mode_ui,
-                submit_button_ui,
-                output_text_ui,
-            ]
-            return updates
+                ),  # top_p_ui
+                gr.update(label=get_text("num_beams", new_lang)),  # num_beams_ui
+                gr.update(label=get_text("conv_mode", new_lang)),  # conv_mode_ui
+                gr.update(
+                    value=get_text("submit", new_lang)
+                ),  # submit_button_ui (text)
+                gr.update(label=get_text("output", new_lang)),  # output_text_ui
+            )
+            return updates_tuple
 
         lang_dropdown.change(
             fn=on_lang_change_handler,
@@ -755,16 +763,29 @@ if __name__ == "__main__":
             lang = current_language_state
             if MODEL:  # Check if model loaded successfully
                 # 清空之前的状态消息，或显示成功加载消息
-                return get_text("model_switched", lang, model_path=new_model_path)
+                status_msg = get_text("model_switched", lang, model_path=new_model_path)
+                button_update = gr.update(
+                    value=get_text("unload_model_button", lang), variant="stop"
+                )
+                submit_update = gr.update(interactive=True)
             else:
-                return get_text(
+                status_msg = get_text(
                     "error_model_load_failed", lang, model_path=new_model_path
                 )
+                button_update = gr.update(
+                    value=get_text("load_model_button", lang), variant="secondary"
+                )
+                submit_update = gr.update(interactive=False)
+            return status_msg, button_update, submit_update
 
         model_selector_ui.change(
             fn=on_model_change,
             inputs=[model_selector_ui],
-            outputs=model_status_text_ui,
+            outputs=[
+                model_status_text_ui,
+                unload_button_ui,
+                submit_button_ui,
+            ],  # Updated outputs
         )
 
         # 模型下载按钮点击事件
@@ -791,11 +812,82 @@ if __name__ == "__main__":
             api_name="generate_description",
         )
 
-        # 卸载模型按钮点击事件
+        # 卸载模型按钮点击事件 (Now combined Load/Unload)
+        def handle_load_unload_click(current_model_path_from_selector):
+            lang = current_language_state
+            if MODEL is None:  # Current state is "Load Model", so we attempt to load
+                if not current_model_path_from_selector or not os.path.exists(
+                    os.path.expanduser(current_model_path_from_selector)
+                ):
+                    status_msg = get_text(
+                        "error_invalid_model_path_selected",
+                        lang,
+                        path=str(current_model_path_from_selector),
+                    )
+                    button_update = gr.update(
+                        value=get_text("load_model_button", lang), variant="secondary"
+                    )  # Remain load
+                    submit_update = gr.update(interactive=False)
+                    return status_msg, button_update, submit_update
+
+                # Perform model loading steps (similar to on_model_change)
+                _restore_generation_config_on_exit()  # Restore for previous model if any
+                update_gen_config_paths(
+                    current_model_path_from_selector
+                )  # Set paths for new model
+                # Rename new model's generation_config if exists
+                if os.path.exists(_initial_gen_config_original_path):
+                    try:
+                        os.rename(
+                            _initial_gen_config_original_path,
+                            _initial_gen_config_backup_path,
+                        )
+                        _renamed_generation_config_globally = True
+                    except OSError:
+                        pass  # logging.warning(f"Could not rename new generation_config.json: {e}")
+                else:
+                    _renamed_generation_config_globally = (
+                        False  # No file to rename for this model
+                    )
+
+                load_model_globally(
+                    current_model_path_from_selector, model_base_str=DEFAULT_MODEL_BASE
+                )
+
+                if MODEL:
+                    status_msg = get_text(
+                        "model_loaded_success",
+                        lang,
+                        model_path=current_model_path_from_selector,
+                    )
+                    button_update = gr.update(
+                        value=get_text("unload_model_button", lang), variant="stop"
+                    )
+                    submit_update = gr.update(interactive=True)
+                else:
+                    status_msg = get_text(
+                        "error_model_load_failed",
+                        lang,
+                        model_path=current_model_path_from_selector,
+                    )
+                    button_update = gr.update(
+                        value=get_text("load_model_button", lang), variant="secondary"
+                    )
+                    submit_update = gr.update(interactive=False)
+                return status_msg, button_update, submit_update
+            else:  # Current state is "Unload Model", so we unload
+                # unload_model_globally now returns a 3-tuple
+                status_msg, button_update, submit_update = unload_model_globally()
+                return status_msg, button_update, submit_update
+
         unload_button_ui.click(
-            fn=unload_model_globally,
-            inputs=[],
-            outputs=model_status_text_ui,  # 输出到模型状态文本框
+            fn=handle_load_unload_click,  # New handler
+            inputs=[model_selector_ui],  # Pass the current selection from dropdown
+            outputs=[
+                model_status_text_ui,
+                unload_button_ui,
+                submit_button_ui,
+            ],  # Update status, button, and submit
         )
 
     app_ui.launch(server_name="0.0.0.0", share=False)

@@ -28,10 +28,12 @@
   "error_tokenize": "Error: Tokenization failed - {err}",
   "error_image_proc": "Error: Image processing failed - {err}",
   "error_infer": "Error: Model inference error - {err}",
-  "error_invalid_model_path_selected": "Error: The selected model path '{path}' is invalid or does not exist.",
-  "error_model_load_failed": "Error: Failed to load model from path: {model_path}",
+  "error_invalid_model_path_selected": "Error: Invalid model path selected '{path}'.",
+  "error_model_load_failed": "Error: Failed to load model {model_path}.",
   "error_no_model_found_or_downloadable": "Error: No local models found and no models available for download. Please check your model configuration.",
   "lang_en": "English",
   "lang_zh": "中文",
+  "load_model_button": "Load Model",
+  "model_loaded_success": "Model {model_path} loaded successfully.",
   "lang_display_name": "English"
 }
