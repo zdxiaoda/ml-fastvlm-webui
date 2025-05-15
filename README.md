@@ -24,19 +24,15 @@ The following table lists available pre-trained FastVLM models. For detailed inf
 ## Setup
 
 1.  **Clone the repository (if you haven't already):**
-
     ```bash
-    # git clone <repository-url>
-    # cd <repository-name>
+    git clone https://github.com/zdxiaoda/ml-fastvlm-webui
+    cd ml-fastvlm-webui
     ```
-
 2.  **Create a Python environment and activate it (e.g., using Conda):**
-
     ```bash
     conda create -n fastvlm_ui python=3.10 -y
     conda activate fastvlm_ui
     ```
-
 3.  **Install dependencies:**
     This project requires Python 3.10 or higher.
     ```bash
@@ -91,15 +87,15 @@ After completing the setup and model configuration:
 
 ### How to use the Web UI:
 
-- **Upload Image:** On the left panel, click the "上传图片" area to browse for an image file, or drag and drop an image. You can also paste an image directly from your clipboard.
-- **Enter Prompt:** Below the image upload, type your question or instruction for the model in the "输入提示" textbox (e.g., "详细描述图片内容", "图片里有多少只猫？"). The default prompt is "描述这张图片。".
-- **Adjust Parameters (Optional):** If needed, expand the "高级参数设置" accordion menu to adjust settings like:
-  - `温度 (Temperature)`: Controls randomness. Lower is more deterministic.
+- **Upload Image:** On the left panel, click the "Upload Image" area to browse for an image file, or drag and drop an image. You can also paste an image directly from your clipboard.
+- **Enter Prompt:** Below the image upload, type your question or instruction for the model in the "Enter prompt" textbox (e.g., "Describe the image in detail", "How many cats are in the picture?"). The default prompt is "Describe the image.".
+- **Adjust Parameters (Optional):** If needed, expand the "Advanced Parameters" accordion menu to adjust settings like:
+  - `Temperature`: Controls randomness. Lower is more deterministic.
   - `Top P`: Nucleus sampling parameter. Set to 0 or 1 to disable.
-  - `束搜索数 (Num Beams)`: Number of beams for beam search. 1 means no beam search.
-  - `对话模式 (Conversation Mode)`: Selects the conversation template.
-- **Generate Description:** Click the "生成描述" button.
-- **View Output:** The model's generated text will appear in the "模型输出" textbox on the right panel. You can use the "复制" button to copy the output.
+  - `Num Beams`: Number of beams for beam search. 1 means no beam search.
+  - `Conversation Mode`: Selects the conversation template.
+- **Generate Description:** Click the "Generate Description" button.
+- **View Output:** The model's generated text will appear in the "Model Output" textbox on the right panel. You can use the "Copy" button to copy the output.
 
 ## Citation
 
