@@ -24,5 +24,6 @@
   "lang_label": "语言",
   "lang_en": "English",
   "lang_zh": "中文",
-  "lang_display_name": "中文"
+  "lang_display_name": "中文",
+  "error_no_model_found": "在 'model' 目录下未找到任何模型文件夹，请先下载模型。"
 }

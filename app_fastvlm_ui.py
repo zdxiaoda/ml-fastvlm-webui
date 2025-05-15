@@ -141,6 +141,24 @@ def _restore_generation_config_on_exit():
         _renamed_generation_config_globally = False
 
 
+# --- 设备自动检测 ---
+def get_optimal_device():
+    """自动检测可用的最佳 PyTorch 设备。"""
+    if torch.cuda.is_available():
+        # 优先使用 NVIDIA CUDA (或兼容的 AMD ROCm)
+        return "cuda"
+    elif torch.backends.mps.is_available():
+        # 其次是 Apple Silicon (MPS)
+        if not torch.backends.mps.is_built():
+            # MPS 未构建，回退到 CPU
+            return "cpu"
+        return "mps"
+    # 可以在此添加对其他设备（如 Intel XPU）的检查
+    # elif hasattr(torch, "xpu") and torch.xpu.is_available():
+    #     return "xpu"
+    return "cpu"  # 默认回退到 CPU
+
+
 # --- 模型加载函数 ---
 def load_model_globally(model_path_str, model_base_str=None):
     global MODEL, TOKENIZER, IMAGE_PROCESSOR, CONTEXT_LEN, MODEL_NAME_GLOBAL, MODEL_CONFIG
@@ -150,11 +168,18 @@ def load_model_globally(model_path_str, model_base_str=None):
     disable_torch_init()
     _model_name_loaded = get_model_name_from_path(actual_model_path)
 
+    selected_device = get_optimal_device()
+    # Consider logging the selected_device if logging is re-enabled later
+    # print(f"Attempting to load model on device: {selected_device}")
+
     try:
         _tokenizer, _model, _image_processor, _context_len = load_pretrained_model(
-            actual_model_path, model_base_str, _model_name_loaded, device="cuda"
+            actual_model_path,
+            model_base_str,
+            _model_name_loaded,
+            device=selected_device,
         )
-    except Exception:
+    except Exception:  # Minimal error handling as per no-logging request
         MODEL = None
         TOKENIZER = None
         IMAGE_PROCESSOR = None
@@ -180,7 +205,7 @@ def load_model_globally(model_path_str, model_base_str=None):
         MODEL.generation_config.pad_token_id = TOKENIZER.pad_token_id
 
 
-# --- Gradio 的预测函数 ---
+# --- Gradio 的预测函数 (旧版，错误信息改为英文) ---
 def generate_description(
     image_input_pil,
     prompt_str,
@@ -190,14 +215,14 @@ def generate_description(
     conv_mode_str,
 ):
     if not all([MODEL, TOKENIZER, IMAGE_PROCESSOR, MODEL_CONFIG]):
-        return "错误：模型组件未完全初始化。请检查服务器日志并重启服务。"
+        return "Error: Model components not fully initialized. Please check server logs and restart."
 
     if image_input_pil is None:
-        return "错误：请输入一张图片。"
+        return "Error: Please input an image."
     if not prompt_str:
-        return "错误：请输入提示文本。"
+        return "Error: Please input a prompt."
 
-    current_device = MODEL.device
+    current_device = MODEL.device  # Assumes MODEL is loaded and has a device property
 
     if MODEL_CONFIG.mm_use_im_start_end:
         full_prompt = (
@@ -211,7 +236,7 @@ def generate_description(
         full_prompt = DEFAULT_IMAGE_TOKEN + "\n" + prompt_str
 
     if conv_mode_str not in conv_templates:
-        return f"错误：无效的对话模式 '{conv_mode_str}'。可用模式: {list(conv_templates.keys())}"
+        return f"Error: Invalid conversation mode '{conv_mode_str}'. Available: {list(conv_templates.keys())}"
 
     conv = conv_templates[conv_mode_str].copy()
     conv.append_message(conv.roles[0], full_prompt)
@@ -227,7 +252,7 @@ def generate_description(
             .to(current_device)
         )
     except Exception as e:
-        return f"错误: 分词失败 - {e}"
+        return f"Error: Tokenization failed - {e}"
 
     image_pil = image_input_pil.convert("RGB")
     try:
@@ -235,7 +260,7 @@ def generate_description(
             [image_pil], IMAGE_PROCESSOR, MODEL_CONFIG
         )[0]
     except Exception as e:
-        return f"错误: 图像处理失败 - {e}"
+        return f"Error: Image processing failed - {e}"
 
     with torch.inference_mode():
         try:
@@ -257,7 +282,7 @@ def generate_description(
                 use_cache=True,
             )
         except Exception as e:
-            return f"错误: 模型推理时发生错误 - {e}"
+            return f"Error: Model inference error - {e}"
 
         generated_text = TOKENIZER.batch_decode(
             output_ids_tensor, skip_special_tokens=True
