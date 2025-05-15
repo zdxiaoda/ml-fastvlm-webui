@@ -138,4 +138,4 @@ dmypy.json
 *.xcworkspace
 
 # FastVLM models
-app/FastVLM/model
+model
