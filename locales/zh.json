@@ -4,6 +4,7 @@
   "select_model_to_download": "选择要下载的模型",
   "download_model_button": "下载模型",
   "download_status_label": "下载状态",
+  "download_progress": "下载进度：{progress}% ({model_name})",
   "select_model": "选择已加载模型",
   "unload_model_button": "卸载当前模型",
   "model_load_unload_status_label": "模型状态",
@@ -36,5 +37,15 @@
   "error_no_model_found_or_downloadable": "错误：未找到本地模型且无模型可供下载。请检查您的模型配置。",
   "error_no_model_found": "在 'model' 目录下未找到任何模型文件夹，请先下载模型。",
   "load_model_button": "加载模型",
-  "model_loaded_success": "模型 {model_path} 已成功加载。"
+  "model_loaded_success": "模型 {model_path} 已成功加载。",
+  "download_error": "下载错误 ({model_name})：{error}",
+  "download_starting": "开始下载模型 {model_name}...",
+  "download_detailed_progress": "正在下载 {model_name}：{downloaded_mb:.2f}MB / {total_mb:.2f}MB ({speed_mbps:.2f} MB/s)",
+  "created_model_dir": "已创建模型目录：{dir}",
+  "unzip_starting": "开始解压文件：{file}...",
+  "unzip_complete": "解压完成，模型 {model_name} 已保存到：{dir}",
+  "zip_removed": "已清理下载的压缩文件：{file}",
+  "model_download_success_with_path": "模型 {model_name} 下载成功，已保存到：{path}",
+  "model_download_success_no_path": "模型 {model_name} 下载成功，但无法自动确定其在列表中的确切路径。请检查模型选择器。",
+  "download_queued": "模型 {model_name} 已加入下载队列..."
 }

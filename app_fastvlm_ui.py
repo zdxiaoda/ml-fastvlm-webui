@@ -12,6 +12,7 @@ import zipfile
 import shutil
 import threading
 import queue
+import time  # Required for initial status before loop
 
 # LLaVA 相关导入 (从 predict.py 复制)
 from llava.utils import disable_torch_init
@@ -111,7 +112,9 @@ DEFAULT_PROMPT = "描述这张图片。"  # 改为中文并符合常见用法
 
 # --- 处理 generation_config.json ---
 # 这些路径基于上面定义的 DEFAULT_MODEL_PATH
-_initial_model_path_expanded = os.path.expanduser(DEFAULT_MODEL_PATH)
+_initial_model_path_expanded = (
+    os.path.expanduser(DEFAULT_MODEL_PATH) if DEFAULT_MODEL_PATH else ""
+)
 _initial_gen_config_original_path = os.path.join(
     _initial_model_path_expanded, "generation_config.json"
 )
@@ -228,27 +231,33 @@ def download_model_gradio_wrapper(
     model_name_to_download, progress=gr.Progress(track_tqdm=True)
 ):
     """Gradio 包装器，用于启动模型下载线程并处理 UI 更新。"""
-    global ALL_MODEL_PATHS  # 声明全局变量以便修改
+    global ALL_MODEL_PATHS, DEFAULT_MODEL_PATH
 
     if not model_name_to_download:
         # 如果模型列表可能已过时，可以考虑刷新
         # current_paths = model_downloader.get_model_paths()
         # if set(ALL_MODEL_PATHS) != set(current_paths):
         #     ALL_MODEL_PATHS = current_paths
-        return get_text(
-            "error_no_model_selected_for_download", current_language_state
-        ), gr.update(choices=ALL_MODEL_PATHS)
+        progress(0, desc="")  # Update progress bar description using progress()
+        return (
+            get_text("error_no_model_selected_for_download", current_language_state),
+            gr.update(choices=ALL_MODEL_PATHS),
+        )
 
     url = model_downloader.MODEL_DOWNLOAD_LINKS.get(model_name_to_download)
     if not url:
         # current_paths = model_downloader.get_model_paths()
         # if set(ALL_MODEL_PATHS) != set(current_paths):
         #     ALL_MODEL_PATHS = current_paths
-        return get_text(
-            "error_model_url_not_found",
-            current_language_state,
-            model_name=model_name_to_download,
-        ), gr.update(choices=ALL_MODEL_PATHS)
+        progress(0, desc="")  # Update progress bar description using progress()
+        return (
+            get_text(
+                "error_model_url_not_found",
+                current_language_state,
+                model_name=model_name_to_download,
+            ),
+            gr.update(choices=ALL_MODEL_PATHS),
+        )
 
     update_q = queue.Queue()
 
@@ -261,41 +270,126 @@ def download_model_gradio_wrapper(
     status_message = get_text(
         "download_queued", current_language_state, model_name=model_name_to_download
     )
-    # 初始化 model_selector_update_dict，使用当前的 ALL_MODEL_PATHS
-    # 这个 ALL_MODEL_PATHS 应该在接收到 'selector_update_info' 时被更新
+    # Initialize with current paths. This will be updated by messages from the thread.
     model_selector_update_dict = {
         "choices": ALL_MODEL_PATHS,
         "value": DEFAULT_MODEL_PATH if DEFAULT_MODEL_PATH in ALL_MODEL_PATHS else None,
     }
 
+    # Initial yield to show "queued" status immediately
+    progress(0, desc=status_message)
+    yield status_message, gr.update(**model_selector_update_dict)
+
+    last_progress_update_time = time.time()
+
     while thread.is_alive() or not update_q.empty():
         try:
-            item = update_q.get(timeout=0.1 if thread.is_alive() else 0.01)
+            item = update_q.get(timeout=0.05)  # Reduced timeout for more responsive UI
             message_type, *payload = item
 
             if message_type == "status":
                 key, kwargs_dict = payload
                 status_message = get_text(key, current_language_state, **kwargs_dict)
+                # Update progress bar description for non-progress statuses as well
+                current_progress_value = (
+                    progress.current_progress
+                    if hasattr(progress, "current_progress")
+                    and progress.current_progress is not None
+                    else 0
+                )
+                progress(current_progress_value, desc=status_message)
+                yield status_message, gr.update(**model_selector_update_dict)
+
+            elif message_type == "detailed_progress":
+                data = payload[0]
+                downloaded_bytes = data["downloaded_bytes"]
+                total_bytes = data["total_bytes"]
+                speed_bps = data["speed_bps"]
+
+                prog_fraction = (
+                    (downloaded_bytes / total_bytes) if total_bytes > 0 else 0
+                )
+                downloaded_mb = downloaded_bytes / (1024 * 1024)
+                total_mb = total_bytes / (1024 * 1024)
+                speed_mbps = speed_bps / (1024 * 1024)
+
+                # Update status message with detailed progress
+                status_message = get_text(
+                    "download_detailed_progress",
+                    current_language_state,
+                    model_name=data["model_name"],
+                    downloaded_mb=downloaded_mb,
+                    total_mb=total_mb,
+                    speed_mbps=speed_mbps,
+                )
+                # Throttle UI updates for progress bar itself to avoid overwhelming Gradio
+                current_time = time.time()
+                if (
+                    current_time - last_progress_update_time >= 0.2
+                    or prog_fraction == 1.0
+                ):
+                    progress(prog_fraction, desc=status_message)
+                    last_progress_update_time = current_time
+                else:  # Still update the text box status, just not the progress bar visuals every time
+                    yield status_message, gr.update(**model_selector_update_dict)
+
             elif message_type == "selector_update_info":
                 (update_info,) = payload
                 if "choices" in update_info:
-                    ALL_MODEL_PATHS = update_info["choices"]  # 更新全局列表
-                model_selector_update_dict = (
-                    update_info  # 保存整个字典以供 gr.update 使用
-                )
-            elif message_type == "finished":
-                # 'finished' 信号，确保在退出循环前产生最后一次更新
-                # 最终的状态信息应该已经在 'status' 更新中设置好了
-                pass  # 将在下一次迭代或循环结束时产生
+                    ALL_MODEL_PATHS = update_info["choices"]
+                model_selector_update_dict = update_info
+                # Yield immediately after selector update to refresh choices
+                yield status_message, gr.update(**model_selector_update_dict)
 
-            yield status_message, gr.update(**model_selector_update_dict)
+            elif message_type == "finished":
+                success = payload[0]
+                if not success and not status_message.startswith(
+                    get_text(
+                        "download_error",
+                        current_language_state,
+                        model_name="",
+                        error="",
+                    ).split(":")[0]
+                ):
+                    # If finished with failure but no specific error message was set as primary status_message,
+                    # ensure a generic error is shown or use last known error.
+                    # This case might occur if an error happened but wasn't the last 'status' update.
+                    # For now, we rely on _perform_download_and_extraction_task to set a final error status.
+                    pass  # Assuming error status already set
+                # Final yield with updated status and selector
+                final_progress_value = (
+                    1.0
+                    if success
+                    else (
+                        progress.current_progress
+                        if hasattr(progress, "current_progress")
+                        and progress.current_progress is not None
+                        else 0
+                    )
+                )
+                progress(final_progress_value, desc=status_message)
+                yield status_message, gr.update(**model_selector_update_dict)
+                break  # Exit loop on finished
 
         except queue.Empty:
             if not thread.is_alive() and update_q.empty():
-                break  # 线程结束且队列为空，退出
+                break
+            # Yield current status if queue is empty but thread is alive, to keep UI responsive
+            yield status_message, gr.update(**model_selector_update_dict)
+            time.sleep(
+                0.05
+            )  # Small sleep to prevent busy loop if thread is alive but queue is temporarily empty
 
-    # 确保返回最终状态给 Gradio outputs
-    # 此时 status_message 和 model_selector_update_dict 应该是最新的
+    # Final state yield after loop completion (e.g., if thread died unexpectedly)
+    final_prog_val = (
+        progress.current_progress
+        if hasattr(progress, "current_progress")
+        and progress.current_progress is not None
+        else 0
+    )
+    if "success" in status_message.lower() and final_prog_val < 1.0:
+        final_prog_val = 1.0  # Ensure success messages show 100%
+    progress(final_prog_val, desc=status_message)
     yield status_message, gr.update(**model_selector_update_dict)
 
 
@@ -524,6 +618,7 @@ if __name__ == "__main__":
                         get_text("download_model_button", current_language_state),
                         variant="secondary",
                     )
+                    download_progress_bar_ui = gr.Progress()
                     download_status_ui = gr.Textbox(
                         label=get_text("download_status_label", current_language_state),
                         interactive=False,
@@ -890,4 +985,4 @@ if __name__ == "__main__":
             ],  # Update status, button, and submit
         )
 
-    app_ui.launch(server_name="0.0.0.0", share=False)
+    app_ui.queue().launch(server_name="0.0.0.0", share=False)
