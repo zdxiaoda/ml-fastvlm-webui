@@ -1,6 +1,7 @@
 {
   "title": "FastVLM - 视觉语言模型界面",
   "desc": "上传图片并输入提示，模型将生成描述或回答关于图片的问题。",
+  "main_interface_tab_label": "主界面",
   "select_model_to_download": "选择要下载的模型",
   "download_model_button": "下载模型",
   "download_status_label": "下载状态",
@@ -47,5 +48,15 @@
   "zip_removed": "已清理下载的压缩文件：{file}",
   "model_download_success_with_path": "模型 {model_name} 下载成功，已保存到：{path}",
   "model_download_success_no_path": "模型 {model_name} 下载成功，但无法自动确定其在列表中的确切路径。请检查模型选择器。",
-  "download_queued": "模型 {model_name} 已加入下载队列..."
+  "download_queued": "模型 {model_name} 已加入下载队列...",
+
+  "api_settings_tab_label": "API 设置",
+  "api_settings_desc": "配置和管理 API 服务器设置，用于与其他应用程序集成。",
+  "api_host_label": "API 主机",
+  "api_port_label": "API 端口",
+  "start_api_button": "启动 API 服务器",
+  "stop_api_button": "停止 API 服务器",
+  "api_status_label": "API 状态",
+  "api_not_started_status": "API 服务器尚未启动。",
+  "error_invalid_port": "无效的端口号: {port}。错误: {error}"
 }

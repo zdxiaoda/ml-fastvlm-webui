@@ -1,6 +1,7 @@
 {
   "title": "FastVLM - Visual Language Model Interface",
   "desc": "Upload an image and enter a prompt, and the model will generate a description or answer questions about the image.",
+  "main_interface_tab_label": "Main Interface",
   "select_model_to_download": "Select Model to Download",
   "download_model_button": "Download Model",
   "download_status_label": "Download Status",
@@ -47,5 +48,15 @@
   "zip_removed": "Cleaned up downloaded zip file: {file}",
   "model_download_success_with_path": "Model {model_name} downloaded successfully, saved to: {path}",
   "model_download_success_no_path": "Model {model_name} downloaded successfully, but its exact path could not be automatically determined in the list. Please check the model selector.",
-  "download_queued": "Model {model_name} has been queued for download..."
+  "download_queued": "Model {model_name} has been queued for download...",
+
+  "api_settings_tab_label": "API Settings",
+  "api_settings_desc": "Configure and manage the API server settings for integration with other applications.",
+  "api_host_label": "API Host",
+  "api_port_label": "API Port",
+  "start_api_button": "Start API Server",
+  "stop_api_button": "Stop API Server",
+  "api_status_label": "API Status",
+  "api_not_started_status": "API server not started.",
+  "error_invalid_port": "Invalid port number: {port}. Error: {error}"
 }

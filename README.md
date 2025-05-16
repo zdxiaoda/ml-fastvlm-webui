@@ -1,20 +1,21 @@
-# FastVLM: Efficient Vision Encoding for Vision Language Models
+# FastVLM: Efficient Vision-Language Model
 
-This is a focused version of the FastVLM repository, configured to run a Gradio-based Web UI for image description. For full details on the original project and research, please refer to:
+This is a streamlined version of the FastVLM repository, configured with a Gradio-based Web UI for image description. For complete details about the original project and research, please refer to:
 **[FastVLM: Efficient Vision Encoding for Vision Language Models](https://www.arxiv.org/abs/2412.13303). (CVPR 2025)**
 
-### Highlights
+### Key Features
 
-- FastVLM introduces FastViTHD, a novel hybrid vision encoder for efficient processing of high-resolution images, leading to faster performance.
-- This repository provides a Gradio Web UI (`app_fastvlm_ui.py`) for easy interaction with FastVLM models, featuring:
-  - **In-UI Model Downloader**: Easily download and manage pre-trained models directly within the application.
+- FastVLM introduces FastViTHD, a novel hybrid vision encoder for efficiently processing high-resolution images with faster performance.
+- This repository provides a Gradio Web UI (`app_fastvlm_ui.py`) for interacting with FastVLM models, featuring:
+  - **Built-in Model Downloader**: Easily download and manage pre-trained models directly within the application.
   - **Automatic Device Selection**: Optimally utilizes available hardware (CUDA, MPS, or CPU).
-  - **Multi-language Support**: Interface available in multiple languages.
+  - **Multi-language Support**: Interface supports multiple languages (English, Chinese).
   - **Interactive Controls**: Adjust generation parameters like temperature, top-p, and beam search.
+  - **API Server**: Provides a RESTful API interface for integration with other applications.
 
-## Model Zoo
+## Model List
 
-The following table lists available pre-trained FastVLM models. For detailed information on various evaluations, please refer to the [paper](https://www.arxiv.org/abs/2412.13303).
+The table below lists the available pre-trained FastVLM models. For detailed information on various evaluations, see the [paper](https://www.arxiv.org/abs/2412.13303).
 
 | Model        | Stage |                                       Pytorch Checkpoint (url)                                        |
 | :----------- | :---: | :---------------------------------------------------------------------------------------------------: |
@@ -25,7 +26,7 @@ The following table lists available pre-trained FastVLM models. For detailed inf
 | FastVLM-7B   |   2   |   [fastvlm_7b_stage2](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_7b_stage2.zip)   |
 |              |   3   |   [fastvlm_7b_stage3](https://ml-site.cdn-apple.com/datasets/fastvlm/llava-fastvithd_7b_stage3.zip)   |
 
-## Setup
+## Installation
 
 1.  **Clone the repository (if you haven't already):**
     ```bash
@@ -41,58 +42,66 @@ The following table lists available pre-trained FastVLM models. For detailed inf
     This project requires Python 3.10 or higher.
     ```bash
     pip install -r requirements.txt
-    # The following command installs the llava package from the local directory
-    # and is necessary for the application to run correctly.
+    # The following command installs the llava package from local directory
+    # which is required for the application to work correctly.
     pip install -e .
     ```
 
-## Using the Web UI
+## Usage Guide
 
-1.  **Start the Gradio web server:**
+### Web UI
 
-    ```bash
-    python app_fastvlm_ui.py
-    ```
+Launch the Gradio web server:
 
-    The script will automatically detect the optimal device (CUDA, MPS, or CPU) and then start the web server. The first time you run the UI, or if no models are found in the `model/` directory, it might take a moment to populate model choices.
+```bash
+python app_fastvlm_ui.py
+```
 
-2.  **Open the UI in your browser:**
-    Once the server is running, it will typically print a local URL to the console, such as `Running on local URL:  http://0.0.0.0:7860` or `http://127.0.0.1:7860`. Open this URL in your web browser.
+Visit the displayed URL in your browser (typically http://0.0.0.0:7860).
 
-    ![FastVLM Web UI Screenshot](./img/webui_example.jpeg)
+![FastVLM Web UI Example](img/webui_example.jpeg)
 
-### Interacting with the Web UI:
+### API Server
 
-The Web UI is organized into several key areas:
+FastVLM provides a RESTful API for integration with other applications:
 
-- **Model Management (Top Section):**
+1. **Starting the API Server:**
 
-  - **Select Model to Download:** Choose a model from the dropdown list provided in the "Model Zoo" section of this README.
-  - **Download Model:** Click this button to download the selected model. Progress will be shown, and upon completion, the model will be available in the "Select Model to Load" dropdown. Models are saved to the `model/` directory.
-  - **Select Model to Load:** After downloading, or if you have manually placed models in the `model/` directory, select the desired model from this dropdown.
-  - **Load Model:** Click to load the selected model into memory. This may take some time. A confirmation message will appear.
-  - **Unload Model:** Click to free up resources by unloading the currently active model.
-  - **Language Selection (语/言/Lang):** Choose your preferred interface language from the dropdown (e.g., English, 中文).
+   - Via Web UI: Navigate to the "API Settings" tab, configure host/port, and click "Start API Server"
+   - Default: host=0.0.0.0, port=8008
 
-- **Image Interaction (Main Section):**
-  - **Upload Image (Left Panel):** Click the "Upload Image" area to browse for an image file, or drag and drop an image. You can also paste an image directly from your clipboard or use the webcam input if available.
-  - **Enter Prompt (Left Panel):** Below the image, type your question or instruction for the model in the "Enter prompt" textbox (e.g., "Describe the image in detail", "How many cats are in the picture?"). The default prompt is "Describe this image." (or its translation).
-  - **Advanced Parameters (Left Panel, Collapsible):** If needed, expand the "Advanced Parameters" accordion menu to adjust settings like:
-    - `Temperature`: Controls randomness. Lower is more deterministic.
-    - `Top P`: Nucleus sampling parameter. Set to 1.0 to disable.
-    - `Num Beams`: Number of beams for beam search. 1 means no beam search.
-    - `Conversation Mode`: Selects the conversation template suitable for the loaded model.
-  - **Generate Description (Left Panel):** Click the "Generate Description" button.
-  - **Model Output (Right Panel):** The model's generated text will appear in the "Model Output" textbox. You can use the "Copy" button to copy the output or "Clear" to empty the textbox.
+2. **API Endpoints:**
 
-**Note on Models:**
+   - **Image Description Generation:**
 
-- The UI dynamically scans the `model/` directory for available models. If you manually add models, ensure they are in subdirectories within `model/` (e.g., `model/your_model_name/`).
-- The first model in the "Select Model to Load" dropdown is often selected by default when the UI starts, but it might not be automatically loaded. Always ensure you click "Load Model" for the desired model.
+     ```bash
+     curl -X POST http://localhost:8008/generate \
+       -H "Content-Type: application/json" \
+       -d '{
+         "image_path": "/path/to/image.jpg",
+         "prompt": "Describe this image",
+         "temperature": 0.7,
+         "top_p": 0.9,
+         "num_beams": 1,
+         "conv_mode": "v1"
+       }'
+     ```
+
+   - **Parameters:**
+     - `image_path`: Path to the image file (required)
+     - `prompt`: Text prompt for image description (required)
+     - `temperature`: Controls randomness (default: 0.2)
+     - `top_p`: Controls diversity (default: 0.7)
+     - `num_beams`: Number of beams for beam search (default: 1)
+     - `conv_mode`: Conversation mode (default: "v1")
+     - `max_new_tokens`: Maximum tokens to generate (optional)
+
+3. **Stopping the API Server:**
+   - Via Web UI: Click "Stop API Server" in the API Settings tab
 
 ## Citation
 
-If you found the original FastVLM work useful, please cite their paper:
+If you find the original FastVLM work useful, please cite their paper:
 
 ```
 @InProceedings{fastvlm2025,
@@ -106,8 +115,8 @@ If you found the original FastVLM work useful, please cite their paper:
 
 ## Acknowledgements
 
-This codebase builds upon multiple open-source contributions. Please see [ACKNOWLEDGEMENTS](ACKNOWLEDGEMENTS) for more details from the original project.
+This codebase builds upon multiple open-source contributions. See [ACKNOWLEDGEMENTS](ACKNOWLEDGEMENTS) in the original project for more details.
 
 ## License
 
-Please check out the repository [LICENSE](LICENSE) before using the provided code and [LICENSE_MODEL](LICENSE_MODEL) for the released models (if applicable to the models you download).
+Before using the provided code, please review the repository [LICENSE](LICENSE) and [LICENSE_MODEL](LICENSE_MODEL) for the released models (as applicable to the models you download).

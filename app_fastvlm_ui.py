@@ -1,400 +1,223 @@
 # app_fastvlm_ui.py
 
 import os
-import torch
-from PIL import Image
+
+# import torch # No longer directly needed
+# from PIL import Image # No longer directly needed here
 import gradio as gr
 import atexit
-import json
-import glob
-import requests
-import zipfile
-import shutil
-import threading
-import queue
-import time  # Required for initial status before loop
 
-# LLaVA 相关导入 (从 predict.py 复制)
-from llava.utils import disable_torch_init
-from llava.conversation import conv_templates  # 用于对话模式选择和 predict_ui
-from llava.model.builder import load_pretrained_model
-from llava.mm_utils import (
-    tokenizer_image_token,
-    process_images,
-    get_model_name_from_path,  # 用于 load_model_globally
-)
-from llava.constants import (  # 用于 predict_ui
-    IMAGE_TOKEN_INDEX,
-    DEFAULT_IMAGE_TOKEN,
-    DEFAULT_IM_START_TOKEN,
-    DEFAULT_IM_END_TOKEN,
-)
+# import json # No longer directly needed
+# import glob # No longer directly needed
+# import requests # No longer directly needed
+# import zipfile # No longer directly needed
+# import shutil # No longer directly needed
+import threading  # Still used for download wrapper
+import queue  # Still used for download wrapper
+import time  # Still used for download wrapper
 
-# --- 从新的下载器模块导入 ---
-import model_downloader  # 直接导入模块
+# LLaVA GONE (moved to core_logic)
 
-# --- 国际化支持 ---
-LOCALES_DIR = "locales"  # 存储翻译文件的目录
-I18N_MESSAGES = {}  # 存储加载的翻译
-DEFAULT_LANG = "en"  # 默认语言
+# --- Core Logic, API, and Model Downloader Imports ---
+import core_logic
+import model_downloader  # For direct access to MODEL_DOWNLOAD_LINKS in UI
+from api import start_api_server, stop_api_server  # For API server control
 
 
-def load_translations():
-    """从 LOCALES_DIR 加载所有 JSON 翻译文件。"""
-    global I18N_MESSAGES
-    if not os.path.isdir(LOCALES_DIR):
-        # 如果目录不存在，则不执行任何操作，I18N_MESSAGES 将为空
-        # 或者可以抛出错误，或者尝试创建目录
-        return
+# --- Initial Setup from Core Logic ---
+core_logic.load_translations()  # Ensure translations are loaded
 
-    for file_path in glob.glob(os.path.join(LOCALES_DIR, "*.json")):
-        lang_code = os.path.basename(file_path)[:-5]  # e.g., "en" from "en.json"
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                I18N_MESSAGES[lang_code] = json.load(f)
-        except Exception:
-            # 此处可以添加错误处理，例如记录到标准错误流，但根据要求不使用 print
-            pass  # 跳过无法加载的文件
+# --- Internationalization Support GONE (moved to core_logic) ---
+# LOCALES_DIR, I18N_MESSAGES, DEFAULT_LANG, load_translations(), current_language_state, get_text() GONE
 
+# --- Global variables: Model and Config GONE (moved to core_logic) ---
+# MODEL, TOKENIZER, IMAGE_PROCESSOR, CONTEXT_LEN, MODEL_NAME_GLOBAL, MODEL_CONFIG GONE
 
-load_translations()  # 程序启动时加载翻译
+# --- Default paths and parameters GONE (moved to core_logic) ---
+# MODEL_ROOT_DIR, ALL_MODEL_PATHS, DEFAULT_MODEL_PATH, DEFAULT_MODEL_BASE, etc. GONE
 
-# 全局当前语言状态
-current_language_state = DEFAULT_LANG
+# --- Handling generation_config.json GONE (moved to core_logic) ---
+# _initial_model_path_expanded, ..., _renamed_generation_config_globally GONE
+# _restore_generation_config_on_exit() GONE (core_logic handles its own via its atexit or load/unload)
 
+# Register atexit hook for the final model's config restoration via core_logic
+atexit.register(core_logic.restore_generation_config_for_current_model)
 
-def get_text(key: str, lang: str, **kwargs) -> str:
-    """获取翻译文本，支持参数化和回退。"""
-    # 首先尝试获取指定语言的翻译
-    lang_translations = I18N_MESSAGES.get(lang)
+# --- Device automatic detection GONE (moved to core_logic) ---
+# get_optimal_device() GONE
 
-    # 如果指定语言未找到或该语言下没有对应key，尝试默认语言
-    if lang_translations is None or key not in lang_translations:
-        lang_translations = I18N_MESSAGES.get(
-            DEFAULT_LANG, {}
-        )  # 回退到默认语言的翻译, 如果默认语言也没有则为空字典
-
-    text_template = lang_translations.get(key)
-
-    if text_template is None:
-        # 如果在任何配置中都找不到key，返回一个提示性字符串
-        return f"[{lang.upper() if lang else DEFAULT_LANG.upper()}:{key}]"
-
-    if kwargs:
-        try:
-            return text_template.format(**kwargs)
-        except KeyError as e:
-            # 如果格式化时缺少参数，返回带错误信息的提示
-            return f"[{lang.upper() if lang else DEFAULT_LANG.upper()}:{key} - Format Error: {e}]"
-    return text_template
+# --- Model loading functions GONE (moved to core_logic) ---
+# load_model_globally(), unload_model_globally() GONE
 
 
-# --- 全局变量：模型和配置 ---
-MODEL = None
-TOKENIZER = None
-IMAGE_PROCESSOR = None
-CONTEXT_LEN = None  # 加载后存储，但未在 predict_ui 中直接使用
-MODEL_NAME_GLOBAL = None  # 存储全局加载的模型名称
-MODEL_CONFIG = None  # 全局存储 model.config
+# --- Gradio's Model Download Wrapper (will be refactored next to use core_logic.get_text) ---
+# download_model_gradio_wrapper will be kept but refactored
 
-# --- 默认路径和参数 (来自用户命令和 predict.py 的默认值) ---
-MODEL_ROOT_DIR = "model"  # 这个常量仍然可以在这里，或者也从 model_downloader 获取
+# --- Gradio's predict function (will be refactored next to use core_logic) ---
+# generate_description() / generate_description_i18n() will be refactored into generate_description_ui_wrapper()
 
-# 使用 model_downloader 中的函数初始化 ALL_MODEL_PATHS
-ALL_MODEL_PATHS = model_downloader.get_model_paths()
-DEFAULT_MODEL_PATH = ALL_MODEL_PATHS[0] if ALL_MODEL_PATHS else None
-DEFAULT_MODEL_BASE = None  # 来自 predict.py args 的默认值
-DEFAULT_CONV_MODE = "qwen_2"  # 来自 predict.py args 的默认值
-DEFAULT_TEMPERATURE = 0.2  # 来自 predict.py args 的默认值
-DEFAULT_TOP_P = 1.0  # Gradio 滑块的默认值设为1.0 (禁用Top P)
-DEFAULT_NUM_BEAMS = 1  # 来自 predict.py args 的默认值
-DEFAULT_PROMPT = "描述这张图片。"  # 改为中文并符合常见用法
+# ... (rest of the file will be refactored in subsequent steps)
 
-# --- 处理 generation_config.json ---
-# 这些路径基于上面定义的 DEFAULT_MODEL_PATH
-_initial_model_path_expanded = (
-    os.path.expanduser(DEFAULT_MODEL_PATH) if DEFAULT_MODEL_PATH else ""
-)
-_initial_gen_config_original_path = os.path.join(
-    _initial_model_path_expanded, "generation_config.json"
-)
-_initial_gen_config_backup_path = os.path.join(
-    _initial_model_path_expanded, ".generation_config.json"
-)
-_renamed_generation_config_globally = False  # 标记是否已执行重命名
+# --- UI Event Handler Functions (Refactored to use core_logic) ---
 
 
-def _restore_generation_config_on_exit():
-    global _renamed_generation_config_globally
-    if _renamed_generation_config_globally:
-        if os.path.exists(_initial_gen_config_backup_path) and not os.path.exists(
-            _initial_gen_config_original_path
-        ):
-            try:
-                os.rename(
-                    _initial_gen_config_backup_path, _initial_gen_config_original_path
-                )
-            except Exception:
-                pass
-        elif not os.path.exists(_initial_gen_config_backup_path):
-            pass
-        _renamed_generation_config_globally = False
+def on_lang_change_handler(new_lang, current_api_host, current_api_port):
+    core_logic.set_current_language(new_lang)
 
+    is_model_loaded_status = core_logic.is_model_loaded()
+    current_button_text_key = (
+        "unload_model_button" if is_model_loaded_status else "load_model_button"
+    )
+    current_button_variant = "stop" if is_model_loaded_status else "secondary"
 
-# --- 设备自动检测 ---
-def get_optimal_device():
-    """自动检测可用的最佳 PyTorch 设备。"""
-    if torch.cuda.is_available():
-        # 优先使用 NVIDIA CUDA (或兼容的 AMD ROCm)
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        # 其次是 Apple Silicon (MPS)
-        if not torch.backends.mps.is_built():
-            # MPS 未构建，回退到 CPU
-            return "cpu"
-        return "mps"
-    # 可以在此添加对其他设备（如 Intel XPU）的检查
-    # elif hasattr(torch, "xpu") and torch.xpu.is_available():
-    #     return "xpu"
-    return "cpu"  # 默认回退到 CPU
-
-
-# --- 模型加载函数 ---
-def load_model_globally(model_path_str, model_base_str=None):
-    global MODEL, TOKENIZER, IMAGE_PROCESSOR, CONTEXT_LEN, MODEL_NAME_GLOBAL, MODEL_CONFIG
-
-    actual_model_path = os.path.expanduser(model_path_str)
-
-    disable_torch_init()
-    _model_name_loaded = get_model_name_from_path(actual_model_path)
-
-    selected_device = get_optimal_device()
-    # Consider logging the selected_device if logging is re-enabled later
-    # print(f"Attempting to load model on device: {selected_device}")
-
-    try:
-        _tokenizer, _model, _image_processor, _context_len = load_pretrained_model(
-            actual_model_path,
-            model_base_str,
-            _model_name_loaded,
-            device=selected_device,
-        )
-    except Exception:  # Minimal error handling as per no-logging request
-        MODEL = None
-        TOKENIZER = None
-        IMAGE_PROCESSOR = None
-        CONTEXT_LEN = None
-        MODEL_NAME_GLOBAL = None
-        MODEL_CONFIG = None
-        return
-
-    MODEL = _model
-    TOKENIZER = _tokenizer
-    IMAGE_PROCESSOR = _image_processor
-    CONTEXT_LEN = _context_len
-    MODEL_NAME_GLOBAL = _model_name_loaded
-    MODEL_CONFIG = _model.config
-
-    if TOKENIZER.pad_token_id is None:
-        TOKENIZER.pad_token_id = TOKENIZER.eos_token_id
-
-    if (
-        MODEL.generation_config.pad_token_id is None
-        or MODEL.generation_config.pad_token_id != TOKENIZER.pad_token_id
-    ):
-        MODEL.generation_config.pad_token_id = TOKENIZER.pad_token_id
-
-
-def unload_model_globally():
-    """卸载当前加载的模型并释放资源。"""
-    global MODEL, TOKENIZER, IMAGE_PROCESSOR, CONTEXT_LEN, MODEL_NAME_GLOBAL, MODEL_CONFIG
-    MODEL = None
-    TOKENIZER = None
-    IMAGE_PROCESSOR = None
-    CONTEXT_LEN = None
-    MODEL_NAME_GLOBAL = None
-    MODEL_CONFIG = None
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return (
-        get_text("model_unloaded_success", current_language_state),
-        gr.update(
-            value=get_text("load_model_button", current_language_state),
-            variant="secondary",
+    # Order of updates must exactly match the `outputs` list in `lang_dropdown_ui.change()`
+    # This list will be fully populated when the UI structure is complete.
+    updates = (
+        gr.update(label=core_logic.get_text("lang_label")),
+        (
+            gr.update(label=core_logic.get_text("main_interface_tab_label"))
+            if APP_UI_STRUCTURE.get("main_tab")
+            else gr.update()
+        ),  # main_tab label
+        (
+            gr.update(value=core_logic.get_text("title"))
+            if APP_UI_STRUCTURE.get("title_md")
+            else gr.update()
         ),
-        gr.update(interactive=False),  # submit_button
+        (
+            gr.update(value=core_logic.get_text("desc"))
+            if APP_UI_STRUCTURE.get("desc_md")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("select_model"))
+            if APP_UI_STRUCTURE.get("model_selector_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(
+                value=core_logic.get_text(current_button_text_key),
+                variant=current_button_variant,
+            )
+            if APP_UI_STRUCTURE.get("load_unload_button_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("model_load_unload_status_label"))
+            if APP_UI_STRUCTURE.get("model_status_text_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("upload_image"))
+            if APP_UI_STRUCTURE.get("image_input_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(
+                label=core_logic.get_text("prompt_label"),
+                value=core_logic.get_text("default_prompt"),
+            )
+            if APP_UI_STRUCTURE.get("prompt_input_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("adv_params"))
+            if APP_UI_STRUCTURE.get("adv_params_accordion")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("temperature"))
+            if APP_UI_STRUCTURE.get("temperature_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(
+                label=core_logic.get_text("top_p"),
+                info=core_logic.get_text("top_p_info"),
+            )
+            if APP_UI_STRUCTURE.get("top_p_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("num_beams"))
+            if APP_UI_STRUCTURE.get("num_beams_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("conv_mode"))
+            if APP_UI_STRUCTURE.get("conv_mode_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(value=core_logic.get_text("submit"))
+            if APP_UI_STRUCTURE.get("submit_button_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("output"))
+            if APP_UI_STRUCTURE.get("output_text_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("select_model_to_download"))
+            if APP_UI_STRUCTURE.get("model_download_selector_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(value=core_logic.get_text("download_model_button"))
+            if APP_UI_STRUCTURE.get("download_button_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("download_status_label"))
+            if APP_UI_STRUCTURE.get("download_status_ui")
+            else gr.update()
+        ),
+        # API Tab components
+        (
+            gr.update(label=core_logic.get_text("api_settings_tab_label"))
+            if APP_UI_STRUCTURE.get("api_tab")
+            else gr.update()
+        ),  # api_tab label
+        (
+            gr.update(value=core_logic.get_text("api_settings_desc"))
+            if APP_UI_STRUCTURE.get("api_desc_md")
+            else gr.update()
+        ),
+        (
+            gr.update(
+                label=core_logic.get_text("api_host_label"), value=current_api_host
+            )
+            if APP_UI_STRUCTURE.get("api_host_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(
+                label=core_logic.get_text("api_port_label"), value=current_api_port
+            )
+            if APP_UI_STRUCTURE.get("api_port_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(value=core_logic.get_text("start_api_button"))
+            if APP_UI_STRUCTURE.get("start_api_button_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(value=core_logic.get_text("stop_api_button"))
+            if APP_UI_STRUCTURE.get("stop_api_button_ui")
+            else gr.update()
+        ),
+        (
+            gr.update(label=core_logic.get_text("api_status_label"))
+            if APP_UI_STRUCTURE.get("api_status_text_ui")
+            else gr.update()
+        ),
     )
+    return updates
 
 
-# --- Gradio 的模型下载包装器 (现在使用 model_downloader) ---
-def download_model_gradio_wrapper(
-    model_name_to_download, progress=gr.Progress(track_tqdm=True)
-):
-    """Gradio 包装器，用于启动模型下载线程并处理 UI 更新。"""
-    global ALL_MODEL_PATHS, DEFAULT_MODEL_PATH
-
-    if not model_name_to_download:
-        # 如果模型列表可能已过时，可以考虑刷新
-        # current_paths = model_downloader.get_model_paths()
-        # if set(ALL_MODEL_PATHS) != set(current_paths):
-        #     ALL_MODEL_PATHS = current_paths
-        progress(0, desc="")  # Update progress bar description using progress()
-        return (
-            get_text("error_no_model_selected_for_download", current_language_state),
-            gr.update(choices=ALL_MODEL_PATHS),
-        )
-
-    url = model_downloader.MODEL_DOWNLOAD_LINKS.get(model_name_to_download)
-    if not url:
-        # current_paths = model_downloader.get_model_paths()
-        # if set(ALL_MODEL_PATHS) != set(current_paths):
-        #     ALL_MODEL_PATHS = current_paths
-        progress(0, desc="")  # Update progress bar description using progress()
-        return (
-            get_text(
-                "error_model_url_not_found",
-                current_language_state,
-                model_name=model_name_to_download,
-            ),
-            gr.update(choices=ALL_MODEL_PATHS),
-        )
-
-    update_q = queue.Queue()
-
-    thread = threading.Thread(
-        target=model_downloader._perform_download_and_extraction_task,
-        args=(model_name_to_download, url, update_q),
-    )
-    thread.start()
-
-    status_message = get_text(
-        "download_queued", current_language_state, model_name=model_name_to_download
-    )
-    # Initialize with current paths. This will be updated by messages from the thread.
-    model_selector_update_dict = {
-        "choices": ALL_MODEL_PATHS,
-        "value": DEFAULT_MODEL_PATH if DEFAULT_MODEL_PATH in ALL_MODEL_PATHS else None,
-    }
-
-    # Initial yield to show "queued" status immediately
-    progress(0, desc=status_message)
-    yield status_message, gr.update(**model_selector_update_dict)
-
-    last_progress_update_time = time.time()
-
-    while thread.is_alive() or not update_q.empty():
-        try:
-            item = update_q.get(timeout=0.05)  # Reduced timeout for more responsive UI
-            message_type, *payload = item
-
-            if message_type == "status":
-                key, kwargs_dict = payload
-                status_message = get_text(key, current_language_state, **kwargs_dict)
-                # Update progress bar description for non-progress statuses as well
-                current_progress_value = (
-                    progress.current_progress
-                    if hasattr(progress, "current_progress")
-                    and progress.current_progress is not None
-                    else 0
-                )
-                progress(current_progress_value, desc=status_message)
-                yield status_message, gr.update(**model_selector_update_dict)
-
-            elif message_type == "detailed_progress":
-                data = payload[0]
-                downloaded_bytes = data["downloaded_bytes"]
-                total_bytes = data["total_bytes"]
-                speed_bps = data["speed_bps"]
-
-                prog_fraction = (
-                    (downloaded_bytes / total_bytes) if total_bytes > 0 else 0
-                )
-                downloaded_mb = downloaded_bytes / (1024 * 1024)
-                total_mb = total_bytes / (1024 * 1024)
-                speed_mbps = speed_bps / (1024 * 1024)
-
-                # Update status message with detailed progress
-                status_message = get_text(
-                    "download_detailed_progress",
-                    current_language_state,
-                    model_name=data["model_name"],
-                    downloaded_mb=downloaded_mb,
-                    total_mb=total_mb,
-                    speed_mbps=speed_mbps,
-                )
-                # Throttle UI updates for progress bar itself to avoid overwhelming Gradio
-                current_time = time.time()
-                if (
-                    current_time - last_progress_update_time >= 0.2
-                    or prog_fraction == 1.0
-                ):
-                    progress(prog_fraction, desc=status_message)
-                    last_progress_update_time = current_time
-                else:  # Still update the text box status, just not the progress bar visuals every time
-                    yield status_message, gr.update(**model_selector_update_dict)
-
-            elif message_type == "selector_update_info":
-                (update_info,) = payload
-                if "choices" in update_info:
-                    ALL_MODEL_PATHS = update_info["choices"]
-                model_selector_update_dict = update_info
-                # Yield immediately after selector update to refresh choices
-                yield status_message, gr.update(**model_selector_update_dict)
-
-            elif message_type == "finished":
-                success = payload[0]
-                if not success and not status_message.startswith(
-                    get_text(
-                        "download_error",
-                        current_language_state,
-                        model_name="",
-                        error="",
-                    ).split(":")[0]
-                ):
-                    # If finished with failure but no specific error message was set as primary status_message,
-                    # ensure a generic error is shown or use last known error.
-                    # This case might occur if an error happened but wasn't the last 'status' update.
-                    # For now, we rely on _perform_download_and_extraction_task to set a final error status.
-                    pass  # Assuming error status already set
-                # Final yield with updated status and selector
-                final_progress_value = (
-                    1.0
-                    if success
-                    else (
-                        progress.current_progress
-                        if hasattr(progress, "current_progress")
-                        and progress.current_progress is not None
-                        else 0
-                    )
-                )
-                progress(final_progress_value, desc=status_message)
-                yield status_message, gr.update(**model_selector_update_dict)
-                break  # Exit loop on finished
-
-        except queue.Empty:
-            if not thread.is_alive() and update_q.empty():
-                break
-            # Yield current status if queue is empty but thread is alive, to keep UI responsive
-            yield status_message, gr.update(**model_selector_update_dict)
-            time.sleep(
-                0.05
-            )  # Small sleep to prevent busy loop if thread is alive but queue is temporarily empty
-
-    # Final state yield after loop completion (e.g., if thread died unexpectedly)
-    final_prog_val = (
-        progress.current_progress
-        if hasattr(progress, "current_progress")
-        and progress.current_progress is not None
-        else 0
-    )
-    if "success" in status_message.lower() and final_prog_val < 1.0:
-        final_prog_val = 1.0  # Ensure success messages show 100%
-    progress(final_prog_val, desc=status_message)
-    yield status_message, gr.update(**model_selector_update_dict)
-
-
-# --- Gradio 的预测函数 (旧版，错误信息改为英文) ---
-def generate_description(
+def generate_description_ui_wrapper(
     image_input_pil,
     prompt_str,
     temperature_float,
@@ -402,499 +225,596 @@ def generate_description(
     num_beams_int,
     conv_mode_str,
 ):
-    if not all([MODEL, TOKENIZER, IMAGE_PROCESSOR, MODEL_CONFIG]):
-        return "Error: Model components not fully initialized. Please check server logs and restart."
-
-    if image_input_pil is None:
-        return "Error: Please input an image."
+    # Basic input validation, though core_logic might also do some.
+    if not core_logic.is_model_loaded():
+        return core_logic.get_text("error_model_not_init")
+    if image_input_pil is None:  # Gradio Image input type='pil' gives PIL image or None
+        return core_logic.get_text("error_no_image")
     if not prompt_str:
-        return "Error: Please input a prompt."
+        return core_logic.get_text("error_no_prompt")
 
-    current_device = MODEL.device  # Assumes MODEL is loaded and has a device property
+    # Call the actual inference function from core_logic
+    return core_logic.execute_model_prediction(
+        image_input_pil=image_input_pil,
+        prompt_str=prompt_str,
+        temperature_float=temperature_float,
+        top_p_float=top_p_float,
+        num_beams_int=num_beams_int,
+        conv_mode_str=conv_mode_str,
+        max_new_tokens=512,  # Or make this configurable in UI
+    )
 
-    if MODEL_CONFIG.mm_use_im_start_end:
-        full_prompt = (
-            DEFAULT_IM_START_TOKEN
-            + DEFAULT_IMAGE_TOKEN
-            + DEFAULT_IM_END_TOKEN
-            + "\n"
-            + prompt_str
+
+def on_model_change_handler(new_model_path):
+    is_currently_loaded = core_logic.is_model_loaded()
+    # Determine current button state to revert to if loading new model fails
+    current_button_text_key = (
+        "unload_model_button" if is_currently_loaded else "load_model_button"
+    )
+    current_button_variant = "stop" if is_currently_loaded else "secondary"
+
+    if not new_model_path or not os.path.exists(os.path.expanduser(new_model_path)):
+        return (
+            core_logic.get_text(
+                "error_invalid_model_path_selected", path=str(new_model_path)
+            ),
+            gr.update(
+                value=core_logic.get_text(current_button_text_key),
+                variant=current_button_variant,
+            ),
+            gr.update(
+                interactive=is_currently_loaded
+            ),  # Keep submit button state as per current loaded model
         )
+
+    # core_logic.load_model_globally handles gen_config renaming and restoring.
+    success = core_logic.load_model_globally(
+        new_model_path, model_base_str=core_logic.DEFAULT_MODEL_BASE
+    )
+
+    if success:
+        status_msg = core_logic.get_text("model_switched", model_path=new_model_path)
+        button_update = gr.update(
+            value=core_logic.get_text("unload_model_button"), variant="stop"
+        )
+        submit_update = gr.update(interactive=True)
     else:
-        full_prompt = DEFAULT_IMAGE_TOKEN + "\n" + prompt_str
-
-    if conv_mode_str not in conv_templates:
-        return f"Error: Invalid conversation mode '{conv_mode_str}'. Available: {list(conv_templates.keys())}"
-
-    conv = conv_templates[conv_mode_str].copy()
-    conv.append_message(conv.roles[0], full_prompt)
-    conv.append_message(conv.roles[1], None)
-    processed_prompt_str = conv.get_prompt()
-
-    try:
-        input_ids_tensor = (
-            tokenizer_image_token(
-                processed_prompt_str, TOKENIZER, IMAGE_TOKEN_INDEX, return_tensors="pt"
-            )
-            .unsqueeze(0)
-            .to(current_device)
+        status_msg = core_logic.get_text(
+            "error_model_load_failed", model_path=new_model_path
         )
-    except Exception as e:
-        return f"Error: Tokenization failed - {e}"
-
-    image_pil = image_input_pil.convert("RGB")
-    try:
-        image_tensor_processed = process_images(
-            [image_pil], IMAGE_PROCESSOR, MODEL_CONFIG
-        )[0]
-    except Exception as e:
-        return f"Error: Image processing failed - {e}"
-
-    with torch.inference_mode():
-        try:
-            actual_top_p = (
-                top_p_float
-                if top_p_float is not None and 0 < top_p_float < 1.0
-                else None
-            )
-
-            output_ids_tensor = MODEL.generate(
-                input_ids_tensor,
-                images=image_tensor_processed.unsqueeze(0).half().to(current_device),
-                image_sizes=[image_pil.size],
-                do_sample=True if temperature_float > 0 else False,
-                temperature=temperature_float,
-                top_p=actual_top_p,
-                num_beams=num_beams_int,
-                max_new_tokens=512,
-                use_cache=True,
-            )
-        except Exception as e:
-            return f"Error: Model inference error - {e}"
-
-        generated_text = TOKENIZER.batch_decode(
-            output_ids_tensor, skip_special_tokens=True
-        )[0].strip()
-
-    return generated_text
-
-
-# --- 主要 Gradio 应用设置 ---
-if __name__ == "__main__":
-    if not ALL_MODEL_PATHS and not model_downloader.MODEL_DOWNLOAD_LINKS:
-        # 修改: 如果本地没有模型且没有可供下载的链接，则报错
-        raise RuntimeError(
-            get_text("error_no_model_found_or_downloadable", current_language_state)
+        # Revert button to its state before the failed load attempt
+        button_update = gr.update(
+            value=core_logic.get_text(current_button_text_key),
+            variant=current_button_variant,
         )
+        submit_update = gr.update(
+            interactive=is_currently_loaded
+        )  # Revert submit interactive state
+    return status_msg, button_update, submit_update
 
-    # 处理 generation_config.json 路径
-    def update_gen_config_paths(model_path):
-        global _initial_model_path_expanded, _initial_gen_config_original_path, _initial_gen_config_backup_path
-        _initial_model_path_expanded = os.path.expanduser(model_path)
-        _initial_gen_config_original_path = os.path.join(
-            _initial_model_path_expanded, "generation_config.json"
-        )
-        _initial_gen_config_backup_path = os.path.join(
-            _initial_model_path_expanded, ".generation_config.json"
-        )
 
-    atexit.register(_restore_generation_config_on_exit)
-
-    load_model_globally(DEFAULT_MODEL_PATH, model_base_str=DEFAULT_MODEL_BASE)
-
-    # Update gen_config_paths *after* first load attempt, using the actual path used
-    if DEFAULT_MODEL_PATH:  # Ensure DEFAULT_MODEL_PATH is not None
-        update_gen_config_paths(DEFAULT_MODEL_PATH)
-        if os.path.exists(_initial_gen_config_original_path):
-            try:
-                os.rename(
-                    _initial_gen_config_original_path, _initial_gen_config_backup_path
-                )
-                _renamed_generation_config_globally = True
-            except OSError:
-                pass  # Silently ignore if renaming fails
-            except Exception:
-                pass  # Silently ignore other exceptions
-
-    initial_button_text_key = "unload_model_button" if MODEL else "load_model_button"
-    initial_button_variant = "stop" if MODEL else "secondary"
-    initial_submit_interactive = True if MODEL else False
-
-    # --- UI 构建 ---
-    with gr.Blocks(theme="NoCrypt/miku") as app_ui:  # 应用 Miku 主题
-
-        title_md = gr.Markdown(get_text("title", current_language_state))
-        desc_md = gr.Markdown(get_text("desc", current_language_state))
-
-        with gr.Row():  # 主要输入输出区域
-            with gr.Column(scale=1):  # 左侧输入列
-                # 已有模型选择器
-                model_selector_ui = gr.Dropdown(
-                    choices=ALL_MODEL_PATHS,
-                    value=(
-                        DEFAULT_MODEL_PATH
-                        if DEFAULT_MODEL_PATH in ALL_MODEL_PATHS
-                        else (ALL_MODEL_PATHS[0] if ALL_MODEL_PATHS else None)
-                    ),
-                    label=get_text("select_model", current_language_state),
-                )
-                unload_button_ui = gr.Button(
-                    value=get_text(initial_button_text_key, current_language_state),
-                    variant=initial_button_variant,
-                )
-                model_status_text_ui = gr.Textbox(
-                    label=get_text(
-                        "model_load_unload_status_label", current_language_state
-                    ),
-                    interactive=False,
-                    lines=2,
-                    value="",
-                )
-                image_input_ui = gr.Image(
-                    type="pil",
-                    label=get_text("upload_image", current_language_state),
-                    sources=["upload", "clipboard", "webcam"],
-                )
-                prompt_input_ui = gr.Textbox(
-                    label=get_text("prompt_label", current_language_state),
-                    value=get_text("default_prompt", current_language_state),
-                    lines=2,
-                )
-
-                with gr.Accordion(
-                    get_text("adv_params", current_language_state), open=False
-                ) as adv_params_accordion:
-                    temperature_ui = gr.Slider(
-                        minimum=0.0,
-                        maximum=2.0,
-                        step=0.01,
-                        value=DEFAULT_TEMPERATURE,
-                        label=get_text("temperature", current_language_state),
-                    )
-                    top_p_ui = gr.Slider(
-                        minimum=0.0,
-                        maximum=1.0,
-                        step=0.01,
-                        value=DEFAULT_TOP_P,
-                        label=get_text("top_p", current_language_state),
-                        info=get_text("top_p_info", current_language_state),
-                    )
-                    num_beams_ui = gr.Slider(
-                        minimum=1,
-                        maximum=10,
-                        step=1,
-                        value=DEFAULT_NUM_BEAMS,
-                        label=get_text("num_beams", current_language_state),
-                    )
-                    conv_mode_ui = gr.Dropdown(
-                        choices=sorted(list(conv_templates.keys())),
-                        value=DEFAULT_CONV_MODE,
-                        label=get_text("conv_mode", current_language_state),
-                    )
-
-                submit_button_ui = gr.Button(
-                    get_text("submit", current_language_state),
-                    variant="primary",
-                    interactive=initial_submit_interactive,
-                )
-
-            with gr.Column(scale=1):  # 右侧输出列
-                output_text_ui = gr.Textbox(
-                    label=get_text("output", current_language_state),
-                    lines=15,  # 保持足够的行数
-                    interactive=False,
-                    show_copy_button=True,
-                )
-                # 模型下载 UI (移动到右侧输出列下方)
-                with gr.Group():
-                    model_download_selector_ui = gr.Dropdown(
-                        choices=list(model_downloader.MODEL_DOWNLOAD_LINKS.keys()),
-                        label=get_text(
-                            "select_model_to_download", current_language_state
-                        ),
-                        value=None,
-                    )
-                    download_button_ui = gr.Button(
-                        get_text("download_model_button", current_language_state),
-                        variant="secondary",
-                    )
-                    download_progress_bar_ui = gr.Progress()
-                    download_status_ui = gr.Textbox(
-                        label=get_text("download_status_label", current_language_state),
-                        interactive=False,
-                        lines=3,
-                    )
-
-                # 语言选择 (也移动到右侧列，下载区域下方)
-                lang_choices = []
-                if I18N_MESSAGES:
-                    for code, translations in I18N_MESSAGES.items():
-                        display_name = translations.get(
-                            "lang_display_name", code.upper()
-                        )
-                        lang_choices.append((display_name, code))
-                else:
-                    lang_choices = [("English", "en")]
-
-                lang_dropdown = gr.Dropdown(
-                    choices=lang_choices,
-                    value=current_language_state,
-                    label=get_text("lang_label", current_language_state),
-                )
-
-        # --- 语言切换回调 ---
-        def on_lang_change_handler(new_lang):
-            global current_language_state
-            current_language_state = new_lang
-
-            current_button_text_key = (
-                "unload_model_button" if MODEL else "load_model_button"
-            )
-            current_button_variant = "stop" if MODEL else "secondary"
-
-            # This list of updates must match the order of components in lang_dropdown.change outputs
-            updates_tuple = (
-                gr.update(label=get_text("lang_label", new_lang)),  # lang_dropdown
-                gr.update(value=get_text("title", new_lang)),  # title_md
-                gr.update(value=get_text("desc", new_lang)),  # desc_md
-                gr.update(
-                    label=get_text("select_model_to_download", new_lang)
-                ),  # model_download_selector_ui
-                gr.update(
-                    value=get_text("download_model_button", new_lang)
-                ),  # download_button_ui
-                gr.update(
-                    label=get_text("download_status_label", new_lang)
-                ),  # download_status_ui
-                gr.update(
-                    label=get_text("select_model", new_lang)
-                ),  # model_selector_ui
-                gr.update(
-                    value=get_text(current_button_text_key, new_lang),
-                    variant=current_button_variant,
-                ),  # unload_button_ui
-                gr.update(
-                    label=get_text("model_load_unload_status_label", new_lang)
-                ),  # model_status_text_ui
-                gr.update(label=get_text("upload_image", new_lang)),  # image_input_ui
-                gr.update(
-                    label=get_text("prompt_label", new_lang),
-                    value=get_text("default_prompt", new_lang),
-                ),  # prompt_input_ui
-                gr.update(
-                    label=get_text("adv_params", new_lang)
-                ),  # adv_params_accordion (label only)
-                gr.update(label=get_text("temperature", new_lang)),  # temperature_ui
-                gr.update(
-                    label=get_text("top_p", new_lang),
-                    info=get_text("top_p_info", new_lang),
-                ),  # top_p_ui
-                gr.update(label=get_text("num_beams", new_lang)),  # num_beams_ui
-                gr.update(label=get_text("conv_mode", new_lang)),  # conv_mode_ui
-                gr.update(
-                    value=get_text("submit", new_lang)
-                ),  # submit_button_ui (text)
-                gr.update(label=get_text("output", new_lang)),  # output_text_ui
-            )
-            return updates_tuple
-
-        lang_dropdown.change(
-            fn=on_lang_change_handler,
-            inputs=[lang_dropdown],
-            outputs=[  # Ensure all components that need text updates are listed here in correct order
-                lang_dropdown,
-                title_md,
-                desc_md,
-                # 模型下载UI组件更新 (顺序根据UI布局调整)
-                model_download_selector_ui,
-                download_button_ui,
-                download_status_ui,
-                # 主要模型选择和其他组件
-                model_selector_ui,
-                unload_button_ui,  # 添加卸载按钮到输出列表
-                model_status_text_ui,  # 添加模型状态文本框到输出列表
-                image_input_ui,
-                prompt_input_ui,
-                adv_params_accordion,
-                temperature_ui,
-                top_p_ui,
-                num_beams_ui,
-                conv_mode_ui,
-                submit_button_ui,
-                output_text_ui,
-            ],
-        )
-
-        # --- 生成描述函数（国际化错误信息） ---
-        def generate_description_i18n(
-            image_input_pil,
-            prompt_str,
-            temperature_float,
-            top_p_float,
-            num_beams_int,
-            conv_mode_str,
+def handle_load_unload_click_handler(current_model_path_from_selector):
+    if not core_logic.is_model_loaded():  # Current state is "Load Model"
+        if not current_model_path_from_selector or not os.path.exists(
+            os.path.expanduser(current_model_path_from_selector)
         ):
-            lang = current_language_state  # Use the global state
-
-            if not all([MODEL, TOKENIZER, IMAGE_PROCESSOR, MODEL_CONFIG]):
-                return get_text("error_model_not_init", lang)
-            if image_input_pil is None:
-                return get_text("error_no_image", lang)
-            if not prompt_str:
-                return get_text("error_no_prompt", lang)
-
-            current_device = MODEL.device  # Assuming MODEL is loaded
-
-            # Check if MODEL_CONFIG is None before accessing mm_use_im_start_end
-            if MODEL_CONFIG is None:  # Should be caught by the "not all" check above
-                return get_text("error_model_not_init", lang)
-
-            if MODEL_CONFIG.mm_use_im_start_end:
-                full_prompt = (
-                    DEFAULT_IM_START_TOKEN
-                    + DEFAULT_IMAGE_TOKEN
-                    + DEFAULT_IM_END_TOKEN
-                    + "\n"
-                    + prompt_str
-                )
-            else:
-                full_prompt = DEFAULT_IMAGE_TOKEN + "\n" + prompt_str
-
-            if conv_mode_str not in conv_templates:
-                return get_text(
-                    "error_invalid_conv",
-                    lang,
-                    conv_mode=conv_mode_str,
-                    modes=list(conv_templates.keys()),
-                )
-            conv = conv_templates[conv_mode_str].copy()
-            conv.append_message(conv.roles[0], full_prompt)
-            conv.append_message(conv.roles[1], None)
-            processed_prompt_str = conv.get_prompt()
-            try:
-                input_ids_tensor = (
-                    tokenizer_image_token(
-                        processed_prompt_str,
-                        TOKENIZER,
-                        IMAGE_TOKEN_INDEX,
-                        return_tensors="pt",
-                    )
-                    .unsqueeze(0)
-                    .to(current_device)
-                )
-            except Exception as e:
-                return get_text("error_tokenize", lang, err=str(e))
-
-            image_pil = image_input_pil.convert("RGB")
-            try:
-                image_tensor_processed = process_images(
-                    [image_pil], IMAGE_PROCESSOR, MODEL_CONFIG
-                )[0]
-            except Exception as e:
-                return get_text("error_image_proc", lang, err=str(e))
-
-            with torch.inference_mode():
-                try:
-                    actual_top_p = (
-                        top_p_float
-                        if top_p_float is not None and 0 < top_p_float < 1.0
-                        else None
-                    )
-                    output_ids_tensor = MODEL.generate(
-                        input_ids_tensor,
-                        images=image_tensor_processed.unsqueeze(0)
-                        .half()
-                        .to(current_device),
-                        image_sizes=[image_pil.size],
-                        do_sample=True if temperature_float > 0 else False,
-                        temperature=temperature_float,
-                        top_p=actual_top_p,
-                        num_beams=num_beams_int,
-                        max_new_tokens=512,
-                        use_cache=True,
-                    )
-                except Exception as e:
-                    return get_text("error_infer", lang, err=str(e))
-
-                generated_text = TOKENIZER.batch_decode(
-                    output_ids_tensor, skip_special_tokens=True
-                )[0].strip()
-            return generated_text
-
-        # 切换模型时自动加载新模型
-        def on_model_change(new_model_path):
-            # 此函数在用户从下拉列表选择模型时触发
-            # 或者在模型下载并自动选中后，由Gradio的 .change() 触发
-            if not new_model_path or not os.path.exists(new_model_path):
-                # 如果路径无效，可以显示错误或不执行任何操作
-                # For now, if path is invalid, model loading will fail gracefully or use previous.
-                # The dropdown should ideally only contain valid paths.
-                return get_text(
-                    "error_invalid_model_path_selected",
-                    current_language_state,
-                    path=new_model_path,
-                )
-
-            _restore_generation_config_on_exit()  # Restore previous before renaming for new one
-            update_gen_config_paths(new_model_path)
-            # Rename new model's generation_config if exists
-            if os.path.exists(_initial_gen_config_original_path):
-                try:
-                    os.rename(
-                        _initial_gen_config_original_path,
-                        _initial_gen_config_backup_path,
-                    )
-                    _renamed_generation_config_globally = (
-                        True  # Mark that we renamed for current model
-                    )
-                except OSError:
-                    pass  # logging.warning(f"Could not rename new generation_config.json: {e}")
-            else:
-                _renamed_generation_config_globally = (
-                    False  # No file to rename for this model
-                )
-
-            load_model_globally(new_model_path, model_base_str=DEFAULT_MODEL_BASE)
-            lang = current_language_state
-            if MODEL:  # Check if model loaded successfully
-                # 清空之前的状态消息，或显示成功加载消息
-                status_msg = get_text("model_switched", lang, model_path=new_model_path)
-                button_update = gr.update(
-                    value=get_text("unload_model_button", lang), variant="stop"
-                )
-                submit_update = gr.update(interactive=True)
-            else:
-                status_msg = get_text(
-                    "error_model_load_failed", lang, model_path=new_model_path
-                )
-                button_update = gr.update(
-                    value=get_text("load_model_button", lang), variant="secondary"
-                )
-                submit_update = gr.update(interactive=False)
+            status_msg = core_logic.get_text(
+                "error_invalid_model_path_selected",
+                path=str(current_model_path_from_selector),
+            )
+            button_update = gr.update(
+                value=core_logic.get_text("load_model_button"), variant="secondary"
+            )
+            submit_update = gr.update(interactive=False)
             return status_msg, button_update, submit_update
 
-        model_selector_ui.change(
-            fn=on_model_change,
-            inputs=[model_selector_ui],
-            outputs=[
-                model_status_text_ui,
-                unload_button_ui,
-                submit_button_ui,
-            ],  # Updated outputs
+        success = core_logic.load_model_globally(
+            current_model_path_from_selector, core_logic.DEFAULT_MODEL_BASE
+        )
+        if success:
+            status_msg = core_logic.get_text(
+                "model_loaded_success", model_path=current_model_path_from_selector
+            )
+            button_update = gr.update(
+                value=core_logic.get_text("unload_model_button"), variant="stop"
+            )
+            submit_update = gr.update(interactive=True)
+        else:
+            status_msg = core_logic.get_text(
+                "error_model_load_failed", model_path=current_model_path_from_selector
+            )
+            button_update = gr.update(
+                value=core_logic.get_text("load_model_button"), variant="secondary"
+            )
+            submit_update = gr.update(interactive=False)
+    else:  # Current state is "Unload Model"
+        core_logic.unload_model_globally()
+        status_msg = core_logic.get_text("model_unloaded_success")
+        button_update = gr.update(
+            value=core_logic.get_text("load_model_button"), variant="secondary"
+        )
+        submit_update = gr.update(interactive=False)
+    return status_msg, button_update, submit_update
+
+
+def download_model_gradio_wrapper(
+    model_name_to_download, progress=gr.Progress(track_tqdm=True)
+):
+    # Get current model list and default from core_logic to ensure UI consistency
+    current_model_list, current_default_model = core_logic.update_global_model_paths()
+
+    selector_ui_update = {"choices": current_model_list, "value": current_default_model}
+
+    if not model_name_to_download:
+        progress(0, desc="")  # Clear progress
+        return (
+            core_logic.get_text("error_no_model_selected_for_download"),
+            gr.update(**selector_ui_update),  # Update dropdown with current paths
         )
 
-        # 模型下载按钮点击事件
+    url = model_downloader.MODEL_DOWNLOAD_LINKS.get(model_name_to_download)
+    if not url:
+        progress(0, desc="")  # Clear progress
+        return (
+            core_logic.get_text(
+                "error_model_url_not_found", model_name=model_name_to_download
+            ),
+            gr.update(**selector_ui_update),  # Update dropdown with current paths
+        )
+
+    update_q = queue.Queue()
+    # _perform_download_and_extraction_task is from model_downloader, not core_logic
+    thread = threading.Thread(
+        target=model_downloader._perform_download_and_extraction_task,
+        args=(model_name_to_download, url, update_q),
+    )
+    thread.start()
+
+    status_message = core_logic.get_text(
+        "download_queued", model_name=model_name_to_download
+    )
+
+    progress(0, desc=status_message)
+    yield status_message, gr.update(**selector_ui_update)
+
+    last_progress_update_time = time.time()
+    loop_count = 0  # For occasional full refresh of selector paths from core_logic
+
+    while thread.is_alive() or not update_q.empty():
+        loop_count += 1
+        try:
+            item = update_q.get(timeout=0.05)
+            message_type, *payload = item
+
+            if message_type == "status":
+                key, kwargs_dict = (
+                    payload[0]
+                    if isinstance(payload[0], tuple)
+                    else (payload[0], payload[1] if len(payload) > 1 else {})
+                )
+                status_message = core_logic.get_text(key, **kwargs_dict)
+                current_progress_val = getattr(progress, "current_progress", 0) or 0
+                progress(current_progress_val, desc=status_message)
+
+            elif message_type == "detailed_progress":
+                data = payload[0]
+                prog_fraction = (
+                    (data["downloaded_bytes"] / data["total_bytes"])
+                    if data["total_bytes"] > 0
+                    else 0
+                )
+                # Prepare data for get_text more carefully
+                fmt_data = {
+                    "model_name": data.get("model_name", model_name_to_download),
+                    "downloaded_mb": data.get("downloaded_bytes", 0) / (1024 * 1024),
+                    "total_mb": data.get("total_bytes", 0) / (1024 * 1024),
+                    "speed_mbps": data.get("speed_bps", 0) / (1024 * 1024),
+                }
+                status_message = core_logic.get_text(
+                    "download_detailed_progress", **fmt_data
+                )
+                current_time = time.time()
+                if (
+                    current_time - last_progress_update_time >= 0.2
+                    or prog_fraction == 1.0
+                ):
+                    progress(prog_fraction, desc=status_message)
+                    last_progress_update_time = current_time
+
+            elif (
+                message_type == "selector_update_info"
+            ):  # Downloader thread informs of path changes
+                update_info = payload[0]
+                if "choices" in update_info:
+                    selector_ui_update["choices"] = update_info["choices"]
+                    core_logic.ALL_MODEL_PATHS = update_info[
+                        "choices"
+                    ]  # Critical: keep core_logic in sync
+                if (
+                    "value" in update_info
+                    and update_info["value"] in selector_ui_update["choices"]
+                ):
+                    selector_ui_update["value"] = update_info["value"]
+                    core_logic.DEFAULT_MODEL_PATH = update_info[
+                        "value"
+                    ]  # Sync core_logic default
+                else:  # If value absent or invalid, refresh from core_logic's potentially updated default
+                    _, current_default_model = core_logic.update_global_model_paths()
+                    selector_ui_update["value"] = current_default_model
+
+            elif message_type == "finished":
+                success_flag = payload[0]
+                final_progress_value = (
+                    1.0
+                    if success_flag
+                    else (getattr(progress, "current_progress", 0) or 0)
+                )
+                progress(
+                    final_progress_value, desc=status_message
+                )  # status_message should be set by "status" before "finished"
+
+                # Crucially, refresh paths from core_logic which internally calls model_downloader.get_model_paths()
+                refreshed_paths, new_default_path = (
+                    core_logic.update_global_model_paths()
+                )
+                selector_ui_update["choices"] = refreshed_paths
+                if success_flag:
+                    # Try to select the newly downloaded model
+                    # Assume model_name_to_download is the folder name
+                    expected_new_model_path = os.path.join(
+                        core_logic.MODEL_ROOT_DIR, model_name_to_download
+                    )
+                    if expected_new_model_path in refreshed_paths:
+                        selector_ui_update["value"] = expected_new_model_path
+                    else:
+                        selector_ui_update["value"] = (
+                            new_default_path  # Fallback to current default
+                        )
+                else:
+                    selector_ui_update["value"] = (
+                        new_default_path  # On failure, use current default
+                    )
+
+                yield status_message, gr.update(**selector_ui_update)
+                break  # Exit loop on finished
+
+            # Periodically refresh the model list from core_logic in case of external changes (less critical)
+            if loop_count % 20 == 0:  # Every ~1 second if timeout is 0.05s
+                refreshed_paths, new_default_path = (
+                    core_logic.update_global_model_paths()
+                )
+                selector_ui_update["choices"] = refreshed_paths
+                # Don't change value unless necessary to avoid interrupting user selection during download
+                if selector_ui_update["value"] not in refreshed_paths:
+                    selector_ui_update["value"] = new_default_path
+
+            yield status_message, gr.update(**selector_ui_update)
+
+        except queue.Empty:
+            if not thread.is_alive() and update_q.empty():
+                break
+            yield status_message, gr.update(**selector_ui_update)  # Keep UI responsive
+            time.sleep(0.05)
+
+    # Final state yield after loop completion
+    final_prog_val = getattr(progress, "current_progress", 0) or 0
+    # Ensure status_message reflects the final outcome
+    # The last 'status' message from the queue before 'finished' should be the most accurate.
+    if "success" in status_message.lower() and final_prog_val < 1.0:
+        final_prog_val = 1.0
+    elif "error" in status_message.lower() and final_prog_val == 1.0:
+        final_prog_val = 0  # If error but 100%, show 0
+    progress(final_prog_val, desc=status_message)
+
+    # One last refresh and update of the selector state from core_logic
+    refreshed_paths_final, final_default_value = core_logic.update_global_model_paths()
+    final_ui_update = {"choices": refreshed_paths_final, "value": final_default_value}
+
+    # If download was successful, try to ensure the downloaded model is selected
+    # This check needs to be after the final status_message is determined
+    if (
+        message_type == "finished" and success_flag
+    ):  # Check if loop broke due to 'finished' and it was a success
+        expected_dl_model_path = os.path.join(
+            core_logic.MODEL_ROOT_DIR, model_name_to_download
+        )
+        if expected_dl_model_path in refreshed_paths_final:
+            final_ui_update["value"] = expected_dl_model_path
+
+    yield status_message, gr.update(**final_ui_update)
+
+
+# Placeholder for APP_UI_STRUCTURE. This will be defined in the UI build part.
+APP_UI_STRUCTURE = {}
+
+
+# --- API Server Control Callbacks ---
+def handle_start_api_server_ui(api_host, api_port_str):
+    try:
+        api_port = int(api_port_str)
+        if not (1024 <= api_port <= 65535):  # Standard port range check
+            raise ValueError("Port number out of valid range (1024-65535)")
+    except ValueError as e:
+        return core_logic.get_text(
+            "error_invalid_port", port=api_port_str, error=str(e)
+        )
+
+    status_message = start_api_server(host=api_host, port=api_port)
+    return status_message
+
+
+def handle_stop_api_server_ui():
+    status_message = stop_api_server()
+    return status_message
+
+
+# --- Main Gradio App Setup (Full UI Build) ---
+if __name__ == "__main__":
+    if core_logic.DEFAULT_MODEL_PATH:
+        print(
+            f"FastVLM UI: Attempting to load initial model '{core_logic.DEFAULT_MODEL_PATH}'"
+        )
+        core_logic.load_model_globally(
+            core_logic.DEFAULT_MODEL_PATH, core_logic.DEFAULT_MODEL_BASE
+        )
+    else:
+        available_models, _ = core_logic.update_global_model_paths()
+        if not model_downloader.MODEL_DOWNLOAD_LINKS and not available_models:
+            error_key = "error_no_model_found_or_downloadable"
+            print(f"[FATAL ERROR] {core_logic.get_text(error_key)}")
+            # Consider exiting if this is critical: raise RuntimeError(core_logic.get_text(error_key))
+
+    init_model_loaded = core_logic.is_model_loaded()
+    init_btn_txt_key = (
+        "unload_model_button" if init_model_loaded else "load_model_button"
+    )
+    init_btn_var = "stop" if init_model_loaded else "secondary"
+    init_submit_interactive = init_model_loaded
+
+    with gr.Blocks(theme="NoCrypt/miku") as app_ui:
+        # Language Dropdown (place it visibly, perhaps at the top)
+        with gr.Row():
+            lang_choices = (
+                [
+                    (v.get("lang_display_name", k.upper()), k)
+                    for k, v in core_logic.I18N_MESSAGES.items()
+                ]
+                if core_logic.I18N_MESSAGES
+                else [("English", "en")]
+            )
+            lang_dropdown_ui = gr.Dropdown(
+                choices=lang_choices,
+                value=core_logic.current_language_state,
+                label=core_logic.get_text("lang_label"),
+                interactive=True,
+            )
+            APP_UI_STRUCTURE["lang_dropdown_ui"] = lang_dropdown_ui
+
+        with gr.Tabs() as main_tabs:
+            # ---- Main Interface Tab ----
+            with gr.TabItem(
+                label=core_logic.get_text("main_interface_tab_label")
+            ) as main_interface_tab:
+                APP_UI_STRUCTURE["main_tab"] = main_interface_tab
+                title_md = gr.Markdown(core_logic.get_text("title"))
+                APP_UI_STRUCTURE["title_md"] = title_md
+                desc_md = gr.Markdown(core_logic.get_text("desc"))
+                APP_UI_STRUCTURE["desc_md"] = desc_md
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        model_selector_ui = gr.Dropdown(
+                            choices=core_logic.ALL_MODEL_PATHS,
+                            value=core_logic.DEFAULT_MODEL_PATH,
+                            label=core_logic.get_text("select_model"),
+                        )
+                        APP_UI_STRUCTURE["model_selector_ui"] = model_selector_ui
+
+                        load_unload_button_ui = gr.Button(
+                            value=core_logic.get_text(init_btn_txt_key),
+                            variant=init_btn_var,
+                        )
+                        APP_UI_STRUCTURE["load_unload_button_ui"] = (
+                            load_unload_button_ui
+                        )
+
+                        model_status_text_ui = gr.Textbox(
+                            label=core_logic.get_text("model_load_unload_status_label"),
+                            interactive=False,
+                            lines=2,
+                        )
+                        APP_UI_STRUCTURE["model_status_text_ui"] = model_status_text_ui
+
+                        image_input_ui = gr.Image(
+                            type="pil",
+                            label=core_logic.get_text("upload_image"),
+                            sources=["upload", "clipboard", "webcam"],
+                        )
+                        APP_UI_STRUCTURE["image_input_ui"] = image_input_ui
+
+                        prompt_input_ui = gr.Textbox(
+                            label=core_logic.get_text("prompt_label"),
+                            value=core_logic.get_text("default_prompt"),
+                            lines=2,
+                        )
+                        APP_UI_STRUCTURE["prompt_input_ui"] = prompt_input_ui
+
+                        adv_params_accordion = gr.Accordion(
+                            core_logic.get_text("adv_params"), open=False
+                        )
+                        APP_UI_STRUCTURE["adv_params_accordion"] = adv_params_accordion
+                        with adv_params_accordion:
+                            temperature_ui = gr.Slider(
+                                0.0,
+                                2.0,
+                                step=0.01,
+                                value=core_logic.DEFAULT_TEMPERATURE,
+                                label=core_logic.get_text("temperature"),
+                            )
+                            APP_UI_STRUCTURE["temperature_ui"] = temperature_ui
+                            top_p_ui = gr.Slider(
+                                0.0,
+                                1.0,
+                                step=0.01,
+                                value=core_logic.DEFAULT_TOP_P,
+                                label=core_logic.get_text("top_p"),
+                                info=core_logic.get_text("top_p_info"),
+                            )
+                            APP_UI_STRUCTURE["top_p_ui"] = top_p_ui
+                            num_beams_ui = gr.Slider(
+                                1,
+                                10,
+                                step=1,
+                                value=core_logic.DEFAULT_NUM_BEAMS,
+                                label=core_logic.get_text("num_beams"),
+                            )
+                            APP_UI_STRUCTURE["num_beams_ui"] = num_beams_ui
+                            conv_mode_ui = gr.Dropdown(
+                                choices=sorted(list(core_logic.conv_templates.keys())),
+                                value=core_logic.DEFAULT_CONV_MODE,
+                                label=core_logic.get_text("conv_mode"),
+                            )
+                            APP_UI_STRUCTURE["conv_mode_ui"] = conv_mode_ui
+
+                        submit_button_ui = gr.Button(
+                            core_logic.get_text("submit"),
+                            variant="primary",
+                            interactive=init_submit_interactive,
+                        )
+                        APP_UI_STRUCTURE["submit_button_ui"] = submit_button_ui
+
+                    with gr.Column(scale=1):
+                        output_text_ui = gr.Textbox(
+                            label=core_logic.get_text("output"),
+                            lines=15,
+                            interactive=False,
+                            show_copy_button=True,
+                        )
+                        APP_UI_STRUCTURE["output_text_ui"] = output_text_ui
+
+                        with gr.Group():  # Model Download Group
+                            model_download_selector_ui = gr.Dropdown(
+                                choices=list(
+                                    model_downloader.MODEL_DOWNLOAD_LINKS.keys()
+                                ),
+                                label=core_logic.get_text("select_model_to_download"),
+                                value=None,
+                            )
+                            APP_UI_STRUCTURE["model_download_selector_ui"] = (
+                                model_download_selector_ui
+                            )
+
+                            download_button_ui = gr.Button(
+                                core_logic.get_text("download_model_button"),
+                                variant="secondary",
+                            )
+                            APP_UI_STRUCTURE["download_button_ui"] = download_button_ui
+
+                            download_progress_bar_ui = gr.Progress()  # No direct label
+                            # APP_UI_STRUCTURE['download_progress_bar_ui'] = download_progress_bar_ui # Not localized by label
+
+                            download_status_ui = gr.Textbox(
+                                label=core_logic.get_text("download_status_label"),
+                                interactive=False,
+                                lines=3,
+                            )
+                            APP_UI_STRUCTURE["download_status_ui"] = download_status_ui
+
+            # ---- API Settings Tab ----
+            with gr.TabItem(
+                label=core_logic.get_text("api_settings_tab_label")
+            ) as api_settings_tab:
+                APP_UI_STRUCTURE["api_tab"] = api_settings_tab
+                api_desc_md = gr.Markdown(core_logic.get_text("api_settings_desc"))
+                APP_UI_STRUCTURE["api_desc_md"] = api_desc_md
+
+                api_host_ui = gr.Textbox(
+                    label=core_logic.get_text("api_host_label"), value="0.0.0.0"
+                )
+                APP_UI_STRUCTURE["api_host_ui"] = api_host_ui
+
+                api_port_ui = gr.Textbox(
+                    label=core_logic.get_text("api_port_label"), value="8008"
+                )
+                APP_UI_STRUCTURE["api_port_ui"] = api_port_ui
+
+                start_api_button_ui = gr.Button(
+                    core_logic.get_text("start_api_button"), variant="primary"
+                )
+                APP_UI_STRUCTURE["start_api_button_ui"] = start_api_button_ui
+
+                stop_api_button_ui = gr.Button(
+                    core_logic.get_text("stop_api_button"), variant="stop"
+                )
+                APP_UI_STRUCTURE["stop_api_button_ui"] = stop_api_button_ui
+
+                api_status_text_ui = gr.Textbox(
+                    label=core_logic.get_text("api_status_label"),
+                    interactive=False,
+                    lines=2,
+                    value=core_logic.get_text("api_not_started_status"),
+                )
+                APP_UI_STRUCTURE["api_status_text_ui"] = api_status_text_ui
+
+        # --- Define the order of outputs for language change handler ---
+        # This must match the order of gr.update() calls in on_lang_change_handler
+        # and the items in APP_UI_STRUCTURE used by it.
+        ordered_ui_elements_for_lang_update = [
+            APP_UI_STRUCTURE["lang_dropdown_ui"],
+            APP_UI_STRUCTURE["main_tab"],
+            APP_UI_STRUCTURE["title_md"],
+            APP_UI_STRUCTURE["desc_md"],
+            APP_UI_STRUCTURE["model_selector_ui"],
+            APP_UI_STRUCTURE["load_unload_button_ui"],
+            APP_UI_STRUCTURE["model_status_text_ui"],
+            APP_UI_STRUCTURE["image_input_ui"],
+            APP_UI_STRUCTURE["prompt_input_ui"],
+            APP_UI_STRUCTURE["adv_params_accordion"],
+            APP_UI_STRUCTURE["temperature_ui"],
+            APP_UI_STRUCTURE["top_p_ui"],
+            APP_UI_STRUCTURE["num_beams_ui"],
+            APP_UI_STRUCTURE["conv_mode_ui"],
+            APP_UI_STRUCTURE["submit_button_ui"],
+            APP_UI_STRUCTURE["output_text_ui"],
+            APP_UI_STRUCTURE["model_download_selector_ui"],
+            APP_UI_STRUCTURE["download_button_ui"],
+            APP_UI_STRUCTURE["download_status_ui"],
+            APP_UI_STRUCTURE["api_tab"],
+            APP_UI_STRUCTURE["api_desc_md"],
+            APP_UI_STRUCTURE["api_host_ui"],
+            APP_UI_STRUCTURE["api_port_ui"],
+            APP_UI_STRUCTURE["start_api_button_ui"],
+            APP_UI_STRUCTURE["stop_api_button_ui"],
+            APP_UI_STRUCTURE["api_status_text_ui"],
+        ]
+
+        # --- Event Listeners ---
+        lang_dropdown_ui.change(
+            fn=on_lang_change_handler,
+            inputs=[
+                lang_dropdown_ui,
+                api_host_ui,
+                api_port_ui,
+            ],  # api_host/port to preserve their values on lang change
+            outputs=ordered_ui_elements_for_lang_update,
+        )
+        model_selector_ui.change(
+            fn=on_model_change_handler,
+            inputs=[model_selector_ui],
+            outputs=[model_status_text_ui, load_unload_button_ui, submit_button_ui],
+        )
+        load_unload_button_ui.click(
+            fn=handle_load_unload_click_handler,
+            inputs=[model_selector_ui],
+            outputs=[model_status_text_ui, load_unload_button_ui, submit_button_ui],
+        )
         download_button_ui.click(
             fn=download_model_gradio_wrapper,
             inputs=[model_download_selector_ui],
-            outputs=[
-                download_status_ui,
-                model_selector_ui,
-            ],  # 确保 model_selector_ui 也在此处更新
+            outputs=[download_status_ui, model_selector_ui],
         )
-
         submit_button_ui.click(
-            fn=generate_description_i18n,
+            fn=generate_description_ui_wrapper,
             inputs=[
                 image_input_ui,
                 prompt_input_ui,
@@ -904,85 +824,17 @@ if __name__ == "__main__":
                 conv_mode_ui,
             ],
             outputs=output_text_ui,
-            api_name="generate_description",
+            api_name="generate_description",  # Keep for Gradio client compatibility
         )
 
-        # 卸载模型按钮点击事件 (Now combined Load/Unload)
-        def handle_load_unload_click(current_model_path_from_selector):
-            lang = current_language_state
-            if MODEL is None:  # Current state is "Load Model", so we attempt to load
-                if not current_model_path_from_selector or not os.path.exists(
-                    os.path.expanduser(current_model_path_from_selector)
-                ):
-                    status_msg = get_text(
-                        "error_invalid_model_path_selected",
-                        lang,
-                        path=str(current_model_path_from_selector),
-                    )
-                    button_update = gr.update(
-                        value=get_text("load_model_button", lang), variant="secondary"
-                    )  # Remain load
-                    submit_update = gr.update(interactive=False)
-                    return status_msg, button_update, submit_update
-
-                # Perform model loading steps (similar to on_model_change)
-                _restore_generation_config_on_exit()  # Restore for previous model if any
-                update_gen_config_paths(
-                    current_model_path_from_selector
-                )  # Set paths for new model
-                # Rename new model's generation_config if exists
-                if os.path.exists(_initial_gen_config_original_path):
-                    try:
-                        os.rename(
-                            _initial_gen_config_original_path,
-                            _initial_gen_config_backup_path,
-                        )
-                        _renamed_generation_config_globally = True
-                    except OSError:
-                        pass  # logging.warning(f"Could not rename new generation_config.json: {e}")
-                else:
-                    _renamed_generation_config_globally = (
-                        False  # No file to rename for this model
-                    )
-
-                load_model_globally(
-                    current_model_path_from_selector, model_base_str=DEFAULT_MODEL_BASE
-                )
-
-                if MODEL:
-                    status_msg = get_text(
-                        "model_loaded_success",
-                        lang,
-                        model_path=current_model_path_from_selector,
-                    )
-                    button_update = gr.update(
-                        value=get_text("unload_model_button", lang), variant="stop"
-                    )
-                    submit_update = gr.update(interactive=True)
-                else:
-                    status_msg = get_text(
-                        "error_model_load_failed",
-                        lang,
-                        model_path=current_model_path_from_selector,
-                    )
-                    button_update = gr.update(
-                        value=get_text("load_model_button", lang), variant="secondary"
-                    )
-                    submit_update = gr.update(interactive=False)
-                return status_msg, button_update, submit_update
-            else:  # Current state is "Unload Model", so we unload
-                # unload_model_globally now returns a 3-tuple
-                status_msg, button_update, submit_update = unload_model_globally()
-                return status_msg, button_update, submit_update
-
-        unload_button_ui.click(
-            fn=handle_load_unload_click,  # New handler
-            inputs=[model_selector_ui],  # Pass the current selection from dropdown
-            outputs=[
-                model_status_text_ui,
-                unload_button_ui,
-                submit_button_ui,
-            ],  # Update status, button, and submit
+        # API Tab Listeners
+        start_api_button_ui.click(
+            fn=handle_start_api_server_ui,
+            inputs=[api_host_ui, api_port_ui],
+            outputs=[api_status_text_ui],
+        )
+        stop_api_button_ui.click(
+            fn=handle_stop_api_server_ui, inputs=None, outputs=[api_status_text_ui]
         )
 
     app_ui.queue().launch(server_name="0.0.0.0", share=False)
