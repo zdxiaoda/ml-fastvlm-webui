@@ -2,7 +2,7 @@ torch==2.6.0
 torchvision==0.21.0
 transformers==4.48.3
 tokenizers==0.21.0
-sentencepiece==0.1.99
+sentencepiece==0.2.1
 shortuuid
 accelerate==1.6.0
 peft>=0.10.0,<0.14.0
